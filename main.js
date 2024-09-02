@@ -1,18 +1,19 @@
 (function () {
   // 请根据自己的选课信息修改本部分！
-  const lessons = {
-    系统推荐课程: {
-      1: "B09A113001 B09D001101 B09D102001 B09G001001",
-      2: "B09N001201 B15M011046 B160410102",
-      3: "B61G010001 B71S003001 B71S104001 ",
+  const lessons = [
+    {
+      category: "系统推荐课程",
+      pages: [
+        { page: 1, courses: "B09A113001 B09D001101 B09D102001 B09G001001" },
+        { page: 2, courses: "B09N001201 B15M011046 B160410102" },
+        { page: 3, courses: "B61G010001 B71S003001 B71S104001" },
+      ],
     },
-    // 方案内课程: {},
-    // 方案外课程: {},
-    体育项目: {
-      1: "B18M005052",
+    {
+      category: "体育项目",
+      pages: [{ page: 1, courses: "B18M005052" }],
     },
-    // 通选课: {},
-  };
+  ];
 
   // 循环选课模式，可尝试效果，不建议使用！
   const loopMode = false;
@@ -22,7 +23,6 @@
   let request = axios.create();
   let tip = grablessonsVue.$message;
   let app = document.getElementById("xsxkapp");
-  const pages = Object.keys(lessons);
 
   // 页面信息
   const menu = document
@@ -44,15 +44,17 @@
 
   // 脚本运行时状态
   let num = 0; // 当前所处页面
-  let pageNum = 0; // 当前页码
+  let pageNum = 0; // 当前页码索引
   let enrollDict = {}; // 当前待选列表
   let isRunning = false; // 运行状态
-  let status = false; // 页面加载状态
+  let status = 0; // 页面加载状态计数器
   const observer = new MutationObserver(() => {
-    if (!status) status = true;
-    else {
-      status = false;
-      console.log(pages[num], "第", methods.getCurrentPage(), "页");
+    status++;
+    const threshold = pageNum === 0 ? 4 : 2; // 根据pageNum设置阈值
+    if (status >= threshold) {
+      // 页面变化达到阈值后调用main函数
+      status = 0;
+      console.log(lessons[num].category, "第", methods.getCurrentPage(), "页");
       main();
     }
   }); // 页面监听器
@@ -201,12 +203,12 @@
                     subtree: true,
                   });
                   console.log(
-                    pages[num],
+                    lessons[num].category,
                     " 第",
                     methods.getCurrentPage(),
                     "页"
                   );
-                  menu[menuPage[pages[num]]].click();
+                  menu[menuPage[lessons[num].category]].click();
                   page[methods.getCurrentPage() - 1].click();
                 },
               },
@@ -451,34 +453,38 @@
     },
     // 获取当前页码
     getCurrentPage() {
-      const pageKeys = Object.keys(lessons[pages[num]]);
-      return pageKeys[pageNum];
+      return lessons[num].pages[pageNum].page;
     },
   };
 
   function main() {
-    const currentPageLessons = lessons[pages[num]];
-    const pageKeys = Object.keys(currentPageLessons);
-    if (pageKeys.length > 0) {
-      methods.addEnrollDict(currentPageLessons[pageKeys[pageNum]]);
+    const currentPageLessons = lessons[num].pages;
+    if (currentPageLessons.length > 0) {
+      methods.addEnrollDict(currentPageLessons[pageNum].courses);
       methods.enroll();
     }
     // 设置翻页间隔，建议不小于1000
     setTimeout(function () {
-      if (pageNum === pageKeys.length - 1) {
-        if (num < pageKeys.length - 1) {
+      if (pageNum === currentPageLessons.length - 1) {
+        if (num < lessons.length - 1) {
           num++;
           pageNum = 0;
           methods.clearEnrollDict();
-          menu[menuPage[pages[num]]].click();
+          menu[menuPage[lessons[num].category]].click();
+          page[methods.getCurrentPage() - 1].click();
         } else {
           num = 0;
           pageNum = 0;
-          status = false;
+          status = 0;
           methods.clearEnrollDict();
           if (loopMode) {
-            console.log(pages[num], " 第", methods.getCurrentPage(), "页");
-            menu[menuPage[pages[num]]].click();
+            console.log(
+              lessons[num].category,
+              " 第",
+              methods.getCurrentPage(),
+              "页"
+            );
+            menu[menuPage[lessons[num].category]].click();
             return;
           }
           isRunning = false;
@@ -493,7 +499,7 @@
       } else {
         pageNum++;
         methods.clearEnrollDict();
-        page[pageKeys[pageNum] - 1].click(); // 将页码减1以访问数组中的元素
+        page[methods.getCurrentPage() - 1].click(); // 将页码减1以访问数组中的元素
       }
     }, 1000);
   }
