@@ -52,7 +52,7 @@
     if (!status) status = true;
     else {
       status = false;
-      console.log(pages[num], "第", pageNum + 1, "页");
+      console.log(pages[num], "第", methods.getCurrentPage(), "页");
       main();
     }
   }); // 页面监听器
@@ -200,8 +200,14 @@
                     childList: true,
                     subtree: true,
                   });
-                  console.log(pages[num], " 第", pageNum + 1, "页");
+                  console.log(
+                    pages[num],
+                    " 第",
+                    methods.getCurrentPage(),
+                    "页"
+                  );
                   menu[menuPage[pages[num]]].click();
+                  page[methods.getCurrentPage() - 1].click();
                 },
               },
             }),
@@ -443,6 +449,11 @@
       enrollDict = {};
       window.Components.reloadList();
     },
+    // 获取当前页码
+    getCurrentPage() {
+      const pageKeys = Object.keys(lessons[pages[num]]);
+      return pageKeys[pageNum];
+    },
   };
 
   function main() {
@@ -454,8 +465,8 @@
     }
     // 设置翻页间隔，建议不小于1000
     setTimeout(function () {
-      if (pageKeys.length === 0 || pageNum === pageKeys.length - 1) {
-        if (num < pages.length - 1) {
+      if (pageNum === pageKeys.length - 1) {
+        if (num < pageKeys.length - 1) {
           num++;
           pageNum = 0;
           methods.clearEnrollDict();
@@ -466,7 +477,7 @@
           status = false;
           methods.clearEnrollDict();
           if (loopMode) {
-            console.log(pages[num], " 第", pageNum + 1, "页");
+            console.log(pages[num], " 第", methods.getCurrentPage(), "页");
             menu[menuPage[pages[num]]].click();
             return;
           }
@@ -482,7 +493,7 @@
       } else {
         pageNum++;
         methods.clearEnrollDict();
-        page[pageKeys[pageNum]].click();
+        page[pageKeys[pageNum] - 1].click(); // 将页码减1以访问数组中的元素
       }
     }, 1000);
   }
