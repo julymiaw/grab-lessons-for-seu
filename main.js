@@ -1,28 +1,17 @@
-// ==UserScript==
-// @name        东南大学抢课助手极速版
-// @namespace   http://tampermonkey.net/
-// @version     2.1.1
-// @description 半自动，请自行提前修改lessons列表！
-// @author      july
-// @license     MIT
-// @match       https://newxk.urp.seu.edu.cn/xsxk/elective/grablessons?*
-// @run-at      document-loaded
-// @downloadURL https://update.greasyfork.org/scripts/482827/%E4%B8%9C%E5%8D%97%E5%A4%A7%E5%AD%A6%E6%8A%A2%E8%AF%BE%E5%8A%A9%E6%89%8B%E9%AD%94%E6%94%B9%E7%89%88%28%E5%8E%A6%E9%97%A8%E5%A4%A7%E5%AD%A6%E5%8F%AF%E7%94%A8%29.user.js
-// @updateURL https://update.greasyfork.org/scripts/482827/%E4%B8%9C%E5%8D%97%E5%A4%A7%E5%AD%A6%E6%8A%A2%E8%AF%BE%E5%8A%A9%E6%89%8B%E9%AD%94%E6%94%B9%E7%89%88%28%E5%8E%A6%E9%97%A8%E5%A4%A7%E5%AD%A6%E5%8F%AF%E7%94%A8%29.meta.js
-// ==/UserScript==
-
 (function () {
   // 请根据自己的选课信息修改本部分！
   const lessons = {
-    系统推荐课程: [
-      "B09A113001 B09D001101 B09D102001 B09G001001",
-      "B09N001201 B15M011046 B160410102",
-      "B61G010001 B71S003001 B71S104001 ",
-    ],
-    // 方案内课程: [],
-    // 方案外课程: [],
-    体育项目: ["B18M005052"],
-    // 通选课: [],
+    系统推荐课程: {
+      1: "B09A113001 B09D001101 B09D102001 B09G001001",
+      2: "B09N001201 B15M011046 B160410102",
+      3: "B61G010001 B71S003001 B71S104001 ",
+    },
+    // 方案内课程: {},
+    // 方案外课程: {},
+    体育项目: {
+      1: "B18M005052",
+    },
+    // 通选课: {},
   };
 
   // 循环选课模式，可尝试效果，不建议使用！
@@ -457,16 +446,15 @@
   };
 
   function main() {
-    if (lessons[pages[num]].length > 0) {
-      methods.addEnrollDict(lessons[pages[num]][pageNum]);
+    const currentPageLessons = lessons[pages[num]];
+    const pageKeys = Object.keys(currentPageLessons);
+    if (pageKeys.length > 0) {
+      methods.addEnrollDict(currentPageLessons[pageKeys[pageNum]]);
       methods.enroll();
     }
     // 设置翻页间隔，建议不小于1000
     setTimeout(function () {
-      if (
-        lessons[pages[num]].length === 0 ||
-        pageNum === lessons[pages[num]].length - 1
-      ) {
+      if (pageKeys.length === 0 || pageNum === pageKeys.length - 1) {
         if (num < pages.length - 1) {
           num++;
           pageNum = 0;
@@ -494,7 +482,7 @@
       } else {
         pageNum++;
         methods.clearEnrollDict();
-        page[pageNum].click();
+        page[pageKeys[pageNum]].click();
       }
     }, 1000);
   }
