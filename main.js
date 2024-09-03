@@ -1,17 +1,33 @@
+// ==UserScript==
+// @name        东南大学抢课助手极速版
+// @namespace   http://tampermonkey.net/
+// @version     3.0.0
+// @description 半自动，请自行提前修改lessons列表！
+// @author      july
+// @license     MIT
+// @match       https://newxk.urp.seu.edu.cn/xsxk/elective/grablessons?*
+// @run-at      document-loaded
+// @downloadURL https://update.greasyfork.org/scripts/482827/%E4%B8%9C%E5%8D%97%E5%A4%A7%E5%AD%A6%E6%8A%A2%E8%AF%BE%E5%8A%A9%E6%89%8B%E6%9E%81%E9%80%9F%E7%89%88.user.js
+// @updateURL https://update.greasyfork.org/scripts/482827/%E4%B8%9C%E5%8D%97%E5%A4%A7%E5%AD%A6%E6%8A%A2%E8%AF%BE%E5%8A%A9%E6%89%8B%E6%9E%81%E9%80%9F%E7%89%88.meta.js
+// ==/UserScript==
+
 (function () {
-  // 请根据自己的选课信息修改本部分！
+  // 请根据自己的选课信息修改本部分！顺序可以自由更改，脚本将按照给定的顺序执行抢课！
   const lessons = [
     {
       category: "系统推荐课程",
-      pages: [
-        { page: 1, courses: "B09A113001 B09D001101 B09D102001 B09G001001" },
-        { page: 2, courses: "B09N001201 B15M011046 B160410102" },
-        { page: 3, courses: "B61G010001 B71S003001 B71S104001" },
-      ],
+      pages: [{ page: 2, courses: "B09N001201 B15M011046 B160410102" }],
     },
     {
       category: "体育项目",
       pages: [{ page: 1, courses: "B18M005052" }],
+    },
+    {
+      category: "系统推荐课程",
+      pages: [
+        { page: 1, courses: "B09A113001 B09D001101 B09D102001 B09G001001" },
+        { page: 3, courses: "B61G010001 B71S003001 B71S104001" },
+      ],
     },
   ];
 
@@ -19,7 +35,7 @@
   const loopMode = false;
 
   // 请勿修改本部分！
-  let version = [2, 0, 0];
+  let version = [3, 0, 0];
   let request = axios.create();
   let tip = grablessonsVue.$message;
   let app = document.getElementById("xsxkapp");
@@ -47,15 +63,16 @@
   let pageNum = 0; // 当前页码索引
   let enrollDict = {}; // 当前待选列表
   let isRunning = false; // 运行状态
-  let status = 0; // 页面加载状态计数器
   const observer = new MutationObserver(() => {
-    status++;
-    const threshold = pageNum === 0 ? 4 : 2; // 根据pageNum设置阈值
-    if (status >= threshold) {
-      // 页面变化达到阈值后调用main函数
-      status = 0;
+    const activePage = document.querySelector(".number.active");
+    if (
+      activePage.innerText == methods.getCurrentPage() &&
+      !activePage.classList.contains("disabled")
+    ) {
       console.log(lessons[num].category, "第", methods.getCurrentPage(), "页");
       main();
+    } else if (!activePage.classList.contains("disabled")) {
+      page[methods.getCurrentPage() - 1].click();
     }
   }); // 页面监听器
 
@@ -202,14 +219,7 @@
                     childList: true,
                     subtree: true,
                   });
-                  console.log(
-                    lessons[num].category,
-                    " 第",
-                    methods.getCurrentPage(),
-                    "页"
-                  );
                   menu[menuPage[lessons[num].category]].click();
-                  page[methods.getCurrentPage() - 1].click();
                 },
               },
             }),
@@ -471,19 +481,11 @@
           pageNum = 0;
           methods.clearEnrollDict();
           menu[menuPage[lessons[num].category]].click();
-          page[methods.getCurrentPage() - 1].click();
         } else {
           num = 0;
           pageNum = 0;
-          status = 0;
           methods.clearEnrollDict();
           if (loopMode) {
-            console.log(
-              lessons[num].category,
-              " 第",
-              methods.getCurrentPage(),
-              "页"
-            );
             menu[menuPage[lessons[num].category]].click();
             return;
           }
