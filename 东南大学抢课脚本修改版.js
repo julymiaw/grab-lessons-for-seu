@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name        东南大学抢课助手修改版
 // @namespace   http://tampermonkey.net/
-// @version     1.0.3
+// @version     2.0.0
 // @description 听说你抢不到课
-// @author      realhuhu
+// @author      july
 // @license     MIT
 // @match       newxk.urp.seu.edu.cn/xsxk/elective/grablessons?*
 // @run-at      document-loaded
@@ -565,6 +565,8 @@
         let currentCourseList = grablessonsVue.courseList;
         let node = document.getElementById("input-box");
         let codeArray = node.value.toUpperCase().split(" ");
+        let failedCodes = []; // 用于存储添加失败的课程代码
+
         for (let i = 0; i < codeArray.length; i++) {
           let code = codeArray[i];
           if (!code) continue;
@@ -619,23 +621,27 @@
               message: "没有查找到课程，请检查课程代码",
               duration: 1000,
             });
+            failedCodes.push(code); // 添加失败的课程代码
           } else if (!teacherFlag) {
             tip({
               type: "warning",
               message: "没有查找到该教师，请检查教师号",
               duration: 1000,
             });
+            failedCodes.push(code); // 添加失败的课程代码
           } else {
             tip({
               type: "success",
               message: "添加成功",
               duration: 1000,
             });
-            node.value = "";
-            window.Components.reloadList();
-            methods.saveCourse();
           }
         }
+
+        // 将添加失败的课程代码重新放入输入框
+        node.value = failedCodes.join(" ");
+        window.Components.reloadList();
+        methods.saveCourse();
       }
     },
     //一键抢课
@@ -651,31 +657,43 @@
           message: "还没有输入课程",
           duration: 1000,
         });
+        return;
       }
-      axios.all(
-        key_list.map((key) =>
-          request({
-            url: "/elective/clazz/add",
-            method: "POST",
-            headers: {
-              batchId: enrollDict[key].courseBatch,
-              "content-type": "application/x-www-form-urlencoded",
-            },
-            data: Qs.stringify({
-              clazzType: enrollDict[key].courseType,
-              clazzId: enrollDict[key].courseCode,
-              secretVal: enrollDict[key].secretVal,
-            }),
-          }).then((res) => {
-            let type = res.data.code === 100 ? "success" : "warning";
-            tip({
-              type,
-              message: enrollDict[key].courseName + ":" + res.data.msg,
-              duration: 1000,
-            });
-          })
-        )
-      );
+
+      const interval = 375; // 设置时间间隔，单位为毫秒
+      let index = 0;
+
+      const enrollCourse = () => {
+        if (index >= key_list.length) {
+          return;
+        }
+
+        const key = key_list[index];
+        request({
+          url: "/elective/clazz/add",
+          method: "POST",
+          headers: {
+            batchId: enrollDict[key].courseBatch,
+            "content-type": "application/x-www-form-urlencoded",
+          },
+          data: Qs.stringify({
+            clazzType: enrollDict[key].courseType,
+            clazzId: enrollDict[key].courseCode,
+            secretVal: enrollDict[key].secretVal,
+          }),
+        }).then((res) => {
+          let type = res.data.code === 100 ? "success" : "warning";
+          tip({
+            type,
+            message: enrollDict[key].courseName + ":" + res.data.msg,
+            duration: 1000,
+          });
+          index++;
+          setTimeout(enrollCourse, interval); // 在每次请求后设置时间间隔
+        });
+      };
+
+      enrollCourse(); // 开始执行抢课
     },
   };
   window.Components.mount();

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        东南大学抢课助手极速版
 // @namespace   http://tampermonkey.net/
-// @version     3.0.0
+// @version     3.1.0
 // @description 半自动，请自行提前修改lessons列表！
 // @author      july
 // @license     MIT
@@ -35,7 +35,7 @@
   const loopMode = false;
 
   // 请勿修改本部分！
-  let version = [3, 0, 0];
+  let version = [3, 1, 0];
   let request = axios.create();
   let tip = grablessonsVue.$message;
   let app = document.getElementById("xsxkapp");
