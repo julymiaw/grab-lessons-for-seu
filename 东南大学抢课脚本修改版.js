@@ -1,6 +1,20 @@
+// ==UserScript==
+// @name        东南大学抢课助手修改版
+// @namespace   http://tampermonkey.net/
+// @version     2.1.0
+// @description 听说你抢不到课
+// @author      july
+// @license     MIT
+// @match       newxk.urp.seu.edu.cn/xsxk/elective/grablessons?*
+// @run-at      document-loaded
+// @icon        https://huhu-1304907527.cos.ap-nanjing.myqcloud.com/share/qkzs
+// @downloadURL https://update.greasyfork.org/scripts/482811/%E4%B8%9C%E5%8D%97%E5%A4%A7%E5%AD%A6%E6%8A%A2%E8%AF%BE%E5%8A%A9%E6%89%8B%E4%BF%AE%E6%94%B9%E7%89%88.user.js
+// @updateURL https://update.greasyfork.org/scripts/482811/%E4%B8%9C%E5%8D%97%E5%A4%A7%E5%AD%A6%E6%8A%A2%E8%AF%BE%E5%8A%A9%E6%89%8B%E4%BF%AE%E6%94%B9%E7%89%88.meta.js
+// ==/UserScript==
+
 (function () {
   //版本
-  let version = [2, 0, 0];
+  let version = [2, 1, 0];
 
   //请求
   let request = axios.create();
@@ -8,7 +22,7 @@
   //提示
   let tip = grablessonsVue.$message;
 
-  let isAdding = false; // 添加状态
+  let isRunning = false;
 
   //设置
   let settings = {
@@ -20,14 +34,6 @@
 
   //挂载的顶层组件
   let app = document.getElementById("xsxkapp");
-
-  // 页面信息
-  const menu = document
-    .getElementsByClassName("teachingClassTypeMenu")[0]
-    .getElementsByClassName("el-menu-item");
-  const page = document
-    .getElementsByClassName("el-pager")[0]
-    .getElementsByClassName("number");
 
   //组件生成
   ((self) => {
@@ -153,16 +159,16 @@
             self.createNode({
               tagName: "button",
               obj: {
-                id: "add-button",
+                id: "enroll-button",
                 class: "el-button el-button--primary el-button--small is-round",
                 style: `
                   margin: 20px;
                   position: absolute;
                   right:2%;
                   bottom:25%
-                `,
+              `,
               },
-              text: "一键添加",
+              text: "一键抢课",
               ev: {
                 click: () => {
                   if (isRunning) {
@@ -174,7 +180,7 @@
                     return;
                   }
                   isRunning = true;
-                  methods.startAdding();
+                  methods.enroll();
                 },
               },
             }),
@@ -188,12 +194,13 @@
                   position: absolute;
                   right:2%;
                   bottom:20%
-                `,
+              `,
               },
-              text: "一键抢课",
+              text: "高级设置",
               ev: {
                 click: () => {
-                  methods.enroll();
+                  document.getElementById("mask").style.display = "block";
+                  self.createPopUp("高级设置", self.createAdvancedPop());
                 },
               },
             }),
@@ -406,26 +413,26 @@
           obj: {
             class: "temp",
             style: `
-          position: fixed;
-          left: ${width ? 50 - 0.5 * width : 30}%;
-          top: ${height ? 50 - 0.5 * height : 30}%;
-          width: ${width || 40}%;
-          height: ${height || 40}%;
-          z-index: 2021;
-          background-color: white;
-          border-radius: 30px;
-          overflow: auto;
-        `,
+              position: fixed;
+              left: ${width ? 50 - 0.5 * width : 30}%;
+              top: ${height ? 50 - 0.5 * height : 30}%;
+              width: ${width || 40}%;
+              height: ${height || 40}%;
+              z-index: 2021;
+              background-color: white;
+              border-radius: 30px;
+              overflow: auto;
+            `,
           },
           children: [
             self.createNode({
               tagName: "h1",
               obj: {
                 style: `
-              margin: 20px 0;
-              width: 100%;
-              text-align: center;
-            `,
+                  margin: 20px 0;
+                  width: 100%;
+                  text-align: center;
+              `,
               },
               text: title,
             }),
@@ -435,11 +442,11 @@
               obj: {
                 class: "el-button el-button--default el-button--large is-round",
                 style: `
-              margin: 20px;
-              position: absolute;
-              right:10%;
-              bottom:0
-            `,
+                  margin: 20px;
+                  position: absolute;
+                  right:10%;
+                  bottom:0
+              `,
               },
               text: "确定",
               ev: {
@@ -463,63 +470,138 @@
           self.createNode({
             tagName: "table",
             obj: {
-              width: "100%",
+              width: "80%",
               border: "1",
               style: `
-            background-color: rgba(0,0,0,0);
-            color: black;
-            text-align: left;
-          `,
+      background-color: rgba(0,0,0,0);
+      color: black;
+      margin: 0 auto; /* 居中显示 */
+    `,
             },
             children: [
               self.createNode({
                 tagName: "tr",
+                obj: {
+                  style: `
+                height: 30px;
+          background-color: #255e95;
+          color: lightblue;
+              `,
+                },
                 HTML: `
-              <th>属性</th>
-              <th>值</th>
-            `,
+        <th style="text-align:center;width: 30%">属性</th>
+        <th style="text-align:center;width: 50%">值</th>
+      `,
               }),
               self.createNode({
                 tagName: "tr",
-                HTML: `
-              <td>课程名称</td>
-              <td>${course.courseName}</td>
-            `,
+                obj: {
+                  style: `height: 30px`,
+                },
+                children: [
+                  self.createNode({
+                    tagName: "td",
+                    obj: {
+                      style: `text-align: center`,
+                    },
+                    text: "课程名称",
+                  }),
+                  self.createNode({
+                    tagName: "td",
+                    obj: {
+                      style: `text-align: center`,
+                    },
+                    text: course.courseName,
+                  }),
+                ],
               }),
               self.createNode({
                 tagName: "tr",
-                HTML: `
-              <td>教师名称</td>
-              <td>${course.teacherName}</td>
-            `,
+                obj: {
+                  style: `height: 30px`,
+                },
+                children: [
+                  self.createNode({
+                    tagName: "td",
+                    obj: {
+                      style: `text-align: center`,
+                    },
+                    text: "教师名称",
+                  }),
+                  self.createNode({
+                    tagName: "td",
+                    obj: {
+                      style: `text-align: center`,
+                    },
+                    text: course.teacherName,
+                  }),
+                ],
               }),
               self.createNode({
                 tagName: "tr",
-                HTML: `
-              <td>课程代码</td>
-              <td>${course.courseCode}</td>
-            `,
+                obj: {
+                  style: `height: 30px`,
+                },
+                children: [
+                  self.createNode({
+                    tagName: "td",
+                    obj: {
+                      style: `text-align: center`,
+                    },
+                    text: "课程代码",
+                  }),
+                  self.createNode({
+                    tagName: "td",
+                    obj: {
+                      style: `text-align: center`,
+                    },
+                    text: course.courseCode,
+                  }),
+                ],
               }),
               self.createNode({
                 tagName: "tr",
-                HTML: `
-              <td>课程类型</td>
-              <td>${course.courseType}</td>
-            `,
+                obj: {
+                  style: `height: 30px`,
+                },
+                children: [
+                  self.createNode({
+                    tagName: "td",
+                    obj: {
+                      style: `text-align: center`,
+                    },
+                    text: "课程类型",
+                  }),
+                  self.createNode({
+                    tagName: "td",
+                    obj: {
+                      style: `text-align: center`,
+                    },
+                    text: course.courseType,
+                  }),
+                ],
               }),
               self.createNode({
                 tagName: "tr",
-                HTML: `
-              <td>批次</td>
-              <td>${course.courseBatch}</td>
-            `,
-              }),
-              self.createNode({
-                tagName: "tr",
-                HTML: `
-              <td>Secret Value</td>
-              <td>${course.secretVal}</td>
-            `,
+                obj: {
+                  style: `height: 30px`,
+                },
+                children: [
+                  self.createNode({
+                    tagName: "td",
+                    obj: {
+                      style: `text-align: center`,
+                    },
+                    text: "批次",
+                  }),
+                  self.createNode({
+                    tagName: "td",
+                    obj: {
+                      style: `text-align: center`,
+                    },
+                    text: course.courseBatch,
+                  }),
+                ],
               }),
             ],
           }),
@@ -584,7 +666,6 @@
         settings.jwt = sessionStorage.token;
       }
       isRunning = false;
-      isAdding = false;
       window.Components.reloadList();
     },
     checkVersion() {
@@ -698,12 +779,6 @@
           }
         }
         if (!courseFlag) {
-          tip({
-            type: "error",
-            message: "没有查找到课程，请检查课程代码",
-            duration: 1000,
-          });
-          console.log("无效的课程代码: ", courseCode);
           failedCodes.push(code); // 添加到失败的课程代码列表
         } else if (!teacherFlag) {
           tip({
@@ -719,100 +794,10 @@
             message: "添加成功",
             duration: 1000,
           });
-          window.Components.reloadList();
         }
       }
       methods.saveCourse();
       return failedCodes; // 返回失败的课程代码
-    },
-    // 开始添加课程
-    startAdding() {
-      let node = document.getElementById("input-box");
-      let codeArray = node.value.toUpperCase().split(" ");
-      if (!codeArray.length) {
-        tip({
-          type: "warning",
-          message: "输入框为空，请输入课程代码",
-          duration: 1000,
-        });
-        return;
-      }
-
-      isAdding = true;
-      let currentPageIndex = 0;
-      let currentTabIndex = 0;
-
-      // 监听页面变化
-      const observer = new MutationObserver(() => {
-        const activePage = document.querySelector(".number.active");
-        if (!activePage.classList.contains("disabled")) {
-          stopPageObserver();
-          let inputNode = document.getElementById("input-box");
-          let codeArray = inputNode.value.toUpperCase().split(" ");
-          methods.addEnrollDict(codeArray.join(" "));
-          currentPageIndex++;
-          setTimeout(addCourses, 500); // 设置时间间隔
-        }
-      });
-
-      // 启动课程主体的监听
-      const activator = document.getElementsByClassName("course-list")[0];
-      observer.observe(activator, {
-        childList: true,
-        subtree: true,
-      });
-
-      // 启动页的监听
-      function startPageObserver() {
-        const pager = document.querySelector(".el-pager");
-        observer.observe(pager, {
-          childList: true,
-          subtree: true,
-        });
-      }
-
-      // 停止页的监听
-      function stopPageObserver() {
-        observer.disconnect();
-        observer.observe(activator, {
-          childList: true,
-          subtree: true,
-        });
-      }
-
-      const addCourses = () => {
-        if (!isAdding) return;
-
-        if (currentTabIndex >= menu.length) {
-          tip({
-            type: "success",
-            message: "所有课程已添加完成",
-            duration: 2000,
-          });
-          isAdding = false;
-          return;
-        }
-
-        if (currentPageIndex >= page.length) {
-          currentTabIndex++;
-          currentPageIndex = 0;
-          if (currentTabIndex < menu.length) {
-            startPageObserver();
-            menu[currentTabIndex].click();
-          }
-          return;
-        }
-
-        let currentPage = page[currentPageIndex];
-        if (!currentPage.classList.contains("disabled")) {
-          currentPage.click();
-        } else {
-          currentPageIndex++;
-          addCourses();
-        }
-      };
-
-      menu[currentTabIndex].click();
     },
     //一键抢课
     enroll() {
