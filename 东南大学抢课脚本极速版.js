@@ -25,7 +25,7 @@
     {
       category: "系统推荐课程",
       pages: [
-        { page: 1, courses: "B09A113001 B09D001101 B09D102001 B09G001001" },
+        { page: 1, courses: "B09A113001 B09D001101 B09D102001 B09G001002" },
         { page: 3, courses: "B61G010001 B71S003001 B71S104001" },
       ],
     },
@@ -430,31 +430,43 @@
           message: "待抢课程为空",
           duration: 1000,
         });
+        return;
       }
-      axios.all(
-        key_list.map((key) =>
-          request({
-            url: "/elective/clazz/add",
-            method: "POST",
-            headers: {
-              batchId: enrollDict[key].courseBatch,
-              "content-type": "application/x-www-form-urlencoded",
-            },
-            data: Qs.stringify({
-              clazzType: enrollDict[key].courseType,
-              clazzId: enrollDict[key].courseCode,
-              secretVal: enrollDict[key].secretVal,
-            }),
-          }).then((res) => {
-            let type = res.data.code === 100 ? "success" : "warning";
-            tip({
-              type,
-              message: enrollDict[key].courseName + ":" + res.data.msg,
-              duration: 1000,
-            });
-          })
-        )
-      );
+
+      const interval = 375; // 设置时间间隔，单位为毫秒
+      let index = 0;
+
+      const enrollCourse = () => {
+        if (index >= key_list.length) {
+          return;
+        }
+
+        const key = key_list[index];
+        request({
+          url: "/elective/clazz/add",
+          method: "POST",
+          headers: {
+            batchId: enrollDict[key].courseBatch,
+            "content-type": "application/x-www-form-urlencoded",
+          },
+          data: Qs.stringify({
+            clazzType: enrollDict[key].courseType,
+            clazzId: enrollDict[key].courseCode,
+            secretVal: enrollDict[key].secretVal,
+          }),
+        }).then((res) => {
+          let type = res.data.code === 100 ? "success" : "warning";
+          tip({
+            type,
+            message: enrollDict[key].courseName + ":" + res.data.msg,
+            duration: 1000,
+          });
+          index++;
+          setTimeout(enrollCourse, interval); // 在每次请求后设置时间间隔
+        });
+      };
+
+      enrollCourse(); // 开始执行抢课
     },
     // 清理抢课列表
     clearEnrollDict() {
@@ -503,7 +515,7 @@
         methods.clearEnrollDict();
         page[methods.getCurrentPage() - 1].click(); // 将页码减1以访问数组中的元素
       }
-    }, 1000);
+    }, currentPageLessons.length * 375 + 500);
   }
   // 生成面板
   window.Components.init();
