@@ -1,17 +1,3 @@
-// ==UserScript==
-// @name        东南大学抢课助手修改版
-// @namespace   http://tampermonkey.net/
-// @version     2.0.0
-// @description 听说你抢不到课
-// @author      july
-// @license     MIT
-// @match       newxk.urp.seu.edu.cn/xsxk/elective/grablessons?*
-// @run-at      document-loaded
-// @icon        https://huhu-1304907527.cos.ap-nanjing.myqcloud.com/share/qkzs
-// @downloadURL https://update.greasyfork.org/scripts/482811/%E4%B8%9C%E5%8D%97%E5%A4%A7%E5%AD%A6%E6%8A%A2%E8%AF%BE%E5%8A%A9%E6%89%8B%E4%BF%AE%E6%94%B9%E7%89%88.user.js
-// @updateURL https://update.greasyfork.org/scripts/482811/%E4%B8%9C%E5%8D%97%E5%A4%A7%E5%AD%A6%E6%8A%A2%E8%AF%BE%E5%8A%A9%E6%89%8B%E4%BF%AE%E6%94%B9%E7%89%88.meta.js
-// ==/UserScript==
-
 (function () {
   //版本
   let version = [2, 0, 0];
@@ -21,6 +7,8 @@
 
   //提示
   let tip = grablessonsVue.$message;
+
+  let isAdding = false; // 添加状态
 
   //设置
   let settings = {
@@ -32,6 +20,14 @@
 
   //挂载的顶层组件
   let app = document.getElementById("xsxkapp");
+
+  // 页面信息
+  const menu = document
+    .getElementsByClassName("teachingClassTypeMenu")[0]
+    .getElementsByClassName("el-menu-item");
+  const page = document
+    .getElementsByClassName("el-pager")[0]
+    .getElementsByClassName("number");
 
   //组件生成
   ((self) => {
@@ -157,19 +153,28 @@
             self.createNode({
               tagName: "button",
               obj: {
-                id: "enroll-button",
+                id: "add-button",
                 class: "el-button el-button--primary el-button--small is-round",
                 style: `
                   margin: 20px;
                   position: absolute;
                   right:2%;
                   bottom:25%
-              `,
+                `,
               },
-              text: "一键抢课",
+              text: "一键添加",
               ev: {
                 click: () => {
-                  methods.enroll();
+                  if (isRunning) {
+                    tip({
+                      type: "error",
+                      message: "脚本已启动，请勿重复点击",
+                      duration: 1000,
+                    });
+                    return;
+                  }
+                  isRunning = true;
+                  methods.startAdding();
                 },
               },
             }),
@@ -183,13 +188,12 @@
                   position: absolute;
                   right:2%;
                   bottom:20%
-              `,
+                `,
               },
-              text: "高级设置",
+              text: "一键抢课",
               ev: {
                 click: () => {
-                  document.getElementById("mask").style.display = "block";
-                  self.createPopUp("高级设置", self.createAdvancedPop());
+                  methods.enroll();
                 },
               },
             }),
@@ -378,7 +382,7 @@
                                   "block";
                                 self.createPopUp(
                                   "更多操作",
-                                  self.createCourseDetailPop(enrollDict[key])
+                                  self.showCourseDetails(enrollDict[key])
                                 );
                               },
                             },
@@ -402,25 +406,26 @@
           obj: {
             class: "temp",
             style: `
-              position: fixed;
-              left: ${width ? 50 - 0.5 * width : 30}%;
-              top: ${height ? 50 - 0.5 * height : 30}%;
-              width: ${width || 40}%;
-              height: ${height || 40}%;
-              z-index: 2021;
-              background-color: white;
-              border-radius: 30px
-          `,
+          position: fixed;
+          left: ${width ? 50 - 0.5 * width : 30}%;
+          top: ${height ? 50 - 0.5 * height : 30}%;
+          width: ${width || 40}%;
+          height: ${height || 40}%;
+          z-index: 2021;
+          background-color: white;
+          border-radius: 30px;
+          overflow: auto;
+        `,
           },
           children: [
             self.createNode({
               tagName: "h1",
               obj: {
                 style: `
-                  margin: 20px 0;
-                  width: 100%;
-                  text-align: center;
-              `,
+              margin: 20px 0;
+              width: 100%;
+              text-align: center;
+            `,
               },
               text: title,
             }),
@@ -430,11 +435,11 @@
               obj: {
                 class: "el-button el-button--default el-button--large is-round",
                 style: `
-                  margin: 20px;
-                  position: absolute;
-                  right:10%;
-                  bottom:0
-              `,
+              margin: 20px;
+              position: absolute;
+              right:10%;
+              bottom:0
+            `,
               },
               text: "确定",
               ev: {
@@ -448,14 +453,79 @@
         })
       );
 
-    //生成课程详情页
-    self.createCourseDetailPop = (course) =>
-      self.createNode({
+    self.showCourseDetails = (course) => {
+      return self.createNode({
         tagName: "div",
         obj: {
           style: `margin:30px`,
         },
+        children: [
+          self.createNode({
+            tagName: "table",
+            obj: {
+              width: "100%",
+              border: "1",
+              style: `
+            background-color: rgba(0,0,0,0);
+            color: black;
+            text-align: left;
+          `,
+            },
+            children: [
+              self.createNode({
+                tagName: "tr",
+                HTML: `
+              <th>属性</th>
+              <th>值</th>
+            `,
+              }),
+              self.createNode({
+                tagName: "tr",
+                HTML: `
+              <td>课程名称</td>
+              <td>${course.courseName}</td>
+            `,
+              }),
+              self.createNode({
+                tagName: "tr",
+                HTML: `
+              <td>教师名称</td>
+              <td>${course.teacherName}</td>
+            `,
+              }),
+              self.createNode({
+                tagName: "tr",
+                HTML: `
+              <td>课程代码</td>
+              <td>${course.courseCode}</td>
+            `,
+              }),
+              self.createNode({
+                tagName: "tr",
+                HTML: `
+              <td>课程类型</td>
+              <td>${course.courseType}</td>
+            `,
+              }),
+              self.createNode({
+                tagName: "tr",
+                HTML: `
+              <td>批次</td>
+              <td>${course.courseBatch}</td>
+            `,
+              }),
+              self.createNode({
+                tagName: "tr",
+                HTML: `
+              <td>Secret Value</td>
+              <td>${course.secretVal}</td>
+            `,
+              }),
+            ],
+          }),
+        ],
       });
+    };
 
     //生成高级操作
     self.createAdvancedPop = () =>
@@ -513,6 +583,8 @@
       } else {
         settings.jwt = sessionStorage.token;
       }
+      isRunning = false;
+      isAdding = false;
       window.Components.reloadList();
     },
     checkVersion() {
@@ -557,92 +629,190 @@
         is_move = false;
       };
     },
-    //处理输入框实践
+    // 处理输入框事件
     enter(e) {
       let evt = window.event || e;
       if (evt.keyCode === 13) {
-        let currentType = grablessonsVue.teachingClassType;
-        let currentCourseList = grablessonsVue.courseList;
         let node = document.getElementById("input-box");
         let codeArray = node.value.toUpperCase().split(" ");
-        let failedCodes = []; // 用于存储添加失败的课程代码
+        let failedCodes = methods.addEnrollDict(codeArray.join(" "));
+        node.value = failedCodes.join(" "); // 将失败的课程代码替换到输入框中
+      }
+    },
+    // 添加课程到抢课列表
+    addEnrollDict(str) {
+      if (!str) return [];
+      let currentType = grablessonsVue.teachingClassType;
+      let currentCourseList = grablessonsVue.courseList;
+      let codeArray = str.split(" ");
+      let failedCodes = []; // 用于存储添加失败的课程代码
 
-        for (let i = 0; i < codeArray.length; i++) {
-          let code = codeArray[i];
-          if (!code) continue;
-          if (enrollDict[code]) {
-            tip({
-              type: "warning",
-              message: "已经添加过了",
-              duration: 1000,
-            });
-            continue;
-          }
-          let courseCode = code.substring(0, 8);
-          let teacherCode = code.substring(8);
+      for (let i = 0; i < codeArray.length; i++) {
+        let code = codeArray[i];
+        if (!code) continue;
+        if (enrollDict[code]) {
+          tip({
+            type: "warning",
+            message: "已经添加过了",
+            duration: 1000,
+          });
+          continue;
+        }
+        let courseCode = code.substring(0, 8);
+        let teacherCode = code.substring(8);
 
-          let courseFlag = false,
-            teacherFlag = false;
-          for (let course of currentCourseList) {
-            if (course.KCH === courseCode) {
-              courseFlag = true;
-              if (grablessonsVue.teachingClassType !== "XGKC") {
-                for (let teacher of course.tcList) {
-                  if (teacher.KXH === teacherCode) {
-                    enrollDict[code] = {
-                      courseBatch: grablessonsVue.lcParam.currentBatch.code,
-                      courseCode: teacher.JXBID,
-                      courseType: currentType,
-                      courseName: course.KCM,
-                      teacherName: teacher.SKJS,
-                      secretVal: teacher.secretVal,
-                    };
-                    teacherFlag = true;
-                  }
-                }
-              } else {
-                if (course.KXH === teacherCode) {
+        let courseFlag = false,
+          teacherFlag = false;
+        for (let course of currentCourseList) {
+          // 检查课程是否存在
+          if (course.KCH === courseCode) {
+            courseFlag = true;
+            // 检查教师是否存在
+            if (grablessonsVue.teachingClassType !== "XGKC") {
+              for (let teacher of course.tcList) {
+                if (teacher.KXH === teacherCode) {
                   enrollDict[code] = {
                     courseBatch: grablessonsVue.lcParam.currentBatch.code,
-                    courseCode: course.JXBID,
+                    courseCode: teacher.JXBID,
                     courseType: currentType,
                     courseName: course.KCM,
-                    teacherName: course.SKJS,
-                    secretVal: course.secretVal,
+                    teacherName: teacher.SKJS,
+                    secretVal: teacher.secretVal,
                   };
                   teacherFlag = true;
                 }
               }
+            } else {
+              if (course.KXH === teacherCode) {
+                enrollDict[code] = {
+                  courseBatch: grablessonsVue.lcParam.currentBatch.code,
+                  courseCode: course.JXBID,
+                  courseType: currentType,
+                  courseName: course.KCM,
+                  teacherName: course.SKJS,
+                  secretVal: course.secretVal,
+                };
+                teacherFlag = true;
+              }
             }
           }
-          if (!courseFlag) {
-            tip({
-              type: "warning",
-              message: "没有查找到课程，请检查课程代码",
-              duration: 1000,
-            });
-            failedCodes.push(code); // 添加失败的课程代码
-          } else if (!teacherFlag) {
-            tip({
-              type: "warning",
-              message: "没有查找到该教师，请检查教师号",
-              duration: 1000,
-            });
-            failedCodes.push(code); // 添加失败的课程代码
-          } else {
-            tip({
-              type: "success",
-              message: "添加成功",
-              duration: 1000,
-            });
-          }
+        }
+        if (!courseFlag) {
+          tip({
+            type: "error",
+            message: "没有查找到课程，请检查课程代码",
+            duration: 1000,
+          });
+          console.log("无效的课程代码: ", courseCode);
+          failedCodes.push(code); // 添加到失败的课程代码列表
+        } else if (!teacherFlag) {
+          tip({
+            type: "error",
+            message: "没有查找到该教师，请检查教师号",
+            duration: 1000,
+          });
+          console.log("无效的教师号: ", teacherCode);
+          failedCodes.push(code); // 添加到失败的课程代码列表
+        } else {
+          tip({
+            type: "success",
+            message: "添加成功",
+            duration: 1000,
+          });
+          window.Components.reloadList();
+        }
+      }
+      methods.saveCourse();
+      return failedCodes; // 返回失败的课程代码
+    },
+    // 开始添加课程
+    startAdding() {
+      let node = document.getElementById("input-box");
+      let codeArray = node.value.toUpperCase().split(" ");
+      if (!codeArray.length) {
+        tip({
+          type: "warning",
+          message: "输入框为空，请输入课程代码",
+          duration: 1000,
+        });
+        return;
+      }
+
+      isAdding = true;
+      let currentPageIndex = 0;
+      let currentTabIndex = 0;
+
+      // 监听页面变化
+      const observer = new MutationObserver(() => {
+        const activePage = document.querySelector(".number.active");
+        if (!activePage.classList.contains("disabled")) {
+          stopPageObserver();
+          let inputNode = document.getElementById("input-box");
+          let codeArray = inputNode.value.toUpperCase().split(" ");
+          methods.addEnrollDict(codeArray.join(" "));
+          currentPageIndex++;
+          setTimeout(addCourses, 500); // 设置时间间隔
+        }
+      });
+
+      // 启动课程主体的监听
+      const activator = document.getElementsByClassName("course-list")[0];
+      observer.observe(activator, {
+        childList: true,
+        subtree: true,
+      });
+
+      // 启动页的监听
+      function startPageObserver() {
+        const pager = document.querySelector(".el-pager");
+        observer.observe(pager, {
+          childList: true,
+          subtree: true,
+        });
+      }
+
+      // 停止页的监听
+      function stopPageObserver() {
+        observer.disconnect();
+        observer.observe(activator, {
+          childList: true,
+          subtree: true,
+        });
+      }
+
+      const addCourses = () => {
+        if (!isAdding) return;
+
+        if (currentTabIndex >= menu.length) {
+          tip({
+            type: "success",
+            message: "所有课程已添加完成",
+            duration: 2000,
+          });
+          isAdding = false;
+          return;
         }
 
-        // 将添加失败的课程代码重新放入输入框
-        node.value = failedCodes.join(" ");
-        window.Components.reloadList();
-        methods.saveCourse();
-      }
+        if (currentPageIndex >= page.length) {
+          currentTabIndex++;
+          currentPageIndex = 0;
+          if (currentTabIndex < menu.length) {
+            startPageObserver();
+            menu[currentTabIndex].click();
+          }
+          return;
+        }
+
+        let currentPage = page[currentPageIndex];
+        if (!currentPage.classList.contains("disabled")) {
+          currentPage.click();
+        } else {
+          currentPageIndex++;
+          addCourses();
+        }
+      };
+
+      menu[currentTabIndex].click();
     },
     //一键抢课
     enroll() {
