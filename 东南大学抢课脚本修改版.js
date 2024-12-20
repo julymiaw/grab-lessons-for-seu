@@ -1,20 +1,18 @@
 // ==UserScript==
 // @name        东南大学抢课助手修改版
 // @namespace   http://tampermonkey.net/
-// @version     2.1.0
+// @version     3.1.0
 // @description 听说你抢不到课
 // @author      july
 // @license     MIT
 // @match       newxk.urp.seu.edu.cn/xsxk/elective/grablessons?*
 // @run-at      document-loaded
-// @icon        https://huhu-1304907527.cos.ap-nanjing.myqcloud.com/share/qkzs
-// @downloadURL https://update.greasyfork.org/scripts/482811/%E4%B8%9C%E5%8D%97%E5%A4%A7%E5%AD%A6%E6%8A%A2%E8%AF%BE%E5%8A%A9%E6%89%8B%E4%BF%AE%E6%94%B9%E7%89%88.user.js
-// @updateURL https://update.greasyfork.org/scripts/482811/%E4%B8%9C%E5%8D%97%E5%A4%A7%E5%AD%A6%E6%8A%A2%E8%AF%BE%E5%8A%A9%E6%89%8B%E4%BF%AE%E6%94%B9%E7%89%88.meta.js
+// @icon        https://s2.loli.net/2024/12/19/lngsEvZ8tfUdJzr.jpg
 // ==/UserScript==
 
 (function () {
   //版本
-  let version = [2, 1, 0];
+  let version = [3, 1, 0];
 
   //请求
   let request = axios.create();
@@ -22,12 +20,14 @@
   //提示
   let tip = grablessonsVue.$message;
 
-  let isRunning = false;
+  // 设置时间间隔
+  const interval = 375; // 设置时间间隔，单位为毫秒
 
-  //设置
-  let settings = {
-    auto: false,
-  };
+  let isRunning = false;
+  let shouldStop = false;
+
+  //设置(存储Token)
+  let settings = {};
 
   //所选课程
   let enrollDict = {};
@@ -42,6 +42,7 @@
       self.createTag();
       self.createPanel();
       self.createMask();
+      self.addEnrollButton();
     };
 
     //生成节点
@@ -115,7 +116,7 @@
               width: 350px;
               height: 100%;
               background-color: rgba(61,72,105,0.8);
-              display: none
+              display: block;
           `,
           },
           children: [
@@ -152,7 +153,7 @@
                   overflow: auto;
                   margin: 10px;
                   border:1px solid white;
-                  height: 50%
+                  height: 75%
               `,
               },
             }),
@@ -164,22 +165,35 @@
                 style: `
                   margin: 20px;
                   position: absolute;
-                  right:2%;
-                  bottom:25%
+                  right:50%;
+                  bottom:5%
               `,
               },
               text: "一键抢课",
               ev: {
-                click: () => {
-                  if (isRunning) {
+                click: async () => {
+                  if (shouldStop) {
                     tip({
                       type: "error",
-                      message: "脚本已启动，请勿重复点击",
+                      message: "请稍候，正在终止上一个抢课进程",
                       duration: 1000,
                     });
                     return;
                   }
+                  if (isRunning) {
+                    shouldStop = true;
+                    // 等待上一个抢课过程完全终止
+                    while (isRunning) {
+                      await new Promise((resolve) => setTimeout(resolve, 50));
+                    }
+                    // 等待一个额外的间隔后再开始新的抢课
+                    await new Promise((resolve) =>
+                      setTimeout(resolve, interval)
+                    );
+                  }
+                  shouldStop = false;
                   isRunning = true;
+                  methods.updateUIState();
                   methods.enroll();
                 },
               },
@@ -187,20 +201,32 @@
             self.createNode({
               tagName: "button",
               obj: {
-                id: "enroll-button",
-                class: "el-button el-button--default el-button--small is-round",
+                id: "stop-button",
+                class: "el-button el-button--danger el-button--small is-round",
                 style: `
                   margin: 20px;
                   position: absolute;
-                  right:2%;
-                  bottom:20%
+                  right:20%;
+                  bottom:5%
               `,
+                disabled: !isRunning,
               },
-              text: "高级设置",
+              text: "停止抢课",
               ev: {
-                click: () => {
-                  document.getElementById("mask").style.display = "block";
-                  self.createPopUp("高级设置", self.createAdvancedPop());
+                click: async () => {
+                  if (isRunning) {
+                    shouldStop = true;
+                    // 等待上一个抢课过程完全终止
+                    while (isRunning) {
+                      await new Promise((resolve) => setTimeout(resolve, 50));
+                    }
+                    // 等待一个额外的间隔
+                    await new Promise((resolve) =>
+                      setTimeout(resolve, interval)
+                    );
+                    shouldStop = false;
+                    methods.updateUIState();
+                  }
                 },
               },
             }),
@@ -211,34 +237,12 @@
                       margin: 20px;
                       position: absolute;
                       right:2%;
-                      bottom:10%;
+                      bottom:1%;
                       color: white;
                       float: right
                   `,
               },
               text: "ver" + version.join("."),
-            }),
-            self.createNode({
-              tagName: "div",
-              obj: {
-                id: "update-tip",
-                style: `
-                      margin: 20px;
-                      position: absolute;
-                      right:2%;
-                      bottom:5%;
-                      color: red;
-                      float: right;
-                      cursor: pointer;
-                      display:none
-                  `,
-              },
-              text: "有新版本，点击更新。更新后请重新进入选课页面",
-              ev: {
-                click: () => {
-                  window.open("https://greasyfork.org/scripts/427237");
-                },
-              },
             }),
           ],
         })
@@ -344,6 +348,7 @@
                             tagName: "button",
                             text: "删除",
                             obj: {
+                              class: "delete-button",
                               style: `
                             color: red;
                             background: transparent;
@@ -357,11 +362,12 @@
                             },
                             ev: {
                               click: () => {
+                                const course = enrollDict[key];
                                 delete enrollDict[key];
                                 methods.saveCourse();
                                 tip({
                                   type: "success",
-                                  message: "已删除",
+                                  message: `${course.teacherName} 的 ${course.courseName} 已删除`,
                                   duration: 1000,
                                 });
                                 self.reloadList();
@@ -388,7 +394,7 @@
                                 document.getElementById("mask").style.display =
                                   "block";
                                 self.createPopUp(
-                                  "更多操作",
+                                  "详细信息",
                                   self.showCourseDetails(enrollDict[key])
                                 );
                               },
@@ -442,7 +448,7 @@
               obj: {
                 class: "el-button el-button--default el-button--large is-round",
                 style: `
-                  margin: 20px;
+                  margin: 10px;
                   position: absolute;
                   right:10%;
                   bottom:0
@@ -460,11 +466,12 @@
         })
       );
 
+    //生成课程详情信息
     self.showCourseDetails = (course) => {
       return self.createNode({
         tagName: "div",
         obj: {
-          style: `margin:30px`,
+          style: `margin:20px`,
         },
         children: [
           self.createNode({
@@ -603,91 +610,156 @@
                   }),
                 ],
               }),
+              self.createNode({
+                tagName: "tr",
+                obj: {
+                  style: `height: 30px`,
+                },
+                children: [
+                  self.createNode({
+                    tagName: "td",
+                    obj: {
+                      style: `text-align: center`,
+                    },
+                    text: "校验码",
+                  }),
+                  self.createNode({
+                    tagName: "td",
+                    obj: {
+                      style: `text-align: center; word-break: break-all;`,
+                    },
+                    text: course.secretVal,
+                  }),
+                ],
+              }),
             ],
           }),
         ],
       });
     };
 
-    //生成高级操作
-    self.createAdvancedPop = () =>
-      self.createNode({
-        tagName: "div",
-        obj: {
-          style: `
-            margin:50px
-        `,
-        },
-        children: [
-          self.createNode({
-            tagName: "div",
-            children: [
-              self.createNode({
-                tagName: "input",
-                obj: {
-                  id: "auto",
-                  type: "checkbox",
-                  value: "settings.auto",
-                },
-              }),
-              self.createNode({
-                tagName: "label",
-                obj: {
-                  for: "auto",
-                },
-                text: "自动抢课（开发中）",
-              }),
-            ],
-          }),
-        ],
+    //生成抢课按钮
+    self.addEnrollButton = () => {
+      // 监听课程块的点击事件
+      document.addEventListener("click", function (event) {
+        const target = event.target;
+        const trElement = target.closest("tr.el-table__row");
+        if (trElement && trElement.classList.contains("expanded")) {
+          setTimeout(() => {
+            const expandedRow = trElement.nextElementSibling;
+            const expandedCell = expandedRow.querySelector(
+              "td.el-table__expanded-cell"
+            );
+            if (!expandedCell) {
+              console.error("未找到 expandedCell");
+              return;
+            }
+
+            // 获取课程编码
+            const courseCode = trElement.querySelector("td span").innerText;
+            // 获取课程名称
+            const courseName = trElement.querySelector(
+              "td:nth-child(2) span"
+            ).innerText;
+
+            // 获取 expandedCell 内的所有“选择”按钮
+            const selectButtons = Array.from(
+              expandedCell.querySelectorAll(
+                "button.el-button--primary.el-button--mini.is-round span"
+              )
+            ).filter((span) => span.innerText.includes("选择"));
+
+            selectButtons.forEach((selectButton) => {
+              // 创建“添加”按钮
+              const addButton = document.createElement("button");
+              addButton.className =
+                "el-button el-button--primary el-button--mini is-round add-course-button";
+              addButton.innerHTML = "<span>添加</span>";
+
+              // 存储课程编码到按钮属性中
+              addButton.setAttribute("data-course-code", courseCode);
+              addButton.setAttribute("data-course-name", courseName);
+
+              // 设置按钮的禁用状态
+              if (isRunning) {
+                addButton.disabled = true;
+                addButton.style.cursor = "not-allowed";
+                addButton.style.opacity = "0.5";
+              }
+
+              // 在“选择”按钮后插入“添加”按钮
+              selectButton.parentElement.parentElement.appendChild(addButton);
+
+              // 添加点击事件
+              addButton.addEventListener("click", function () {
+                // 获取课程班编号
+                const classRow = selectButton.closest(".el-card__body");
+                if (!classRow) {
+                  console.error("未找到 classRow");
+                  return;
+                }
+                const sequenceInfo = classRow
+                  .querySelector(".one-row span")
+                  .innerText.replace("[", "");
+
+                // 获取存储的课程编码
+                const storedCourseCode =
+                  addButton.getAttribute("data-course-code");
+
+                // 拼接课程编码与课程班编号
+                const courseString = storedCourseCode + sequenceInfo;
+
+                // 使用 addSingleCourse 函数添加课程
+                methods.addSingleCourse(courseString);
+              });
+            });
+          }, 100); // 增加延迟时间以确保详情块已插入
+        }
       });
+    };
   })((window.Components = window.Components || {}));
 
   let methods = {
     //初始化数据
     init() {
-      methods.checkVersion();
-      let raw = JSON.parse(localStorage.getItem("huhu"));
+      let raw = JSON.parse(localStorage.getItem("july"));
       if (raw) {
         settings = raw.settings;
-        if (settings.jwt === sessionStorage.token) {
+        if (settings.token === sessionStorage.token) {
           enrollDict = raw.enrollDict;
         } else if (JSON.stringify(raw.enrollDict) !== "{}") {
+          // 获取 raw.enrollDict 的所有课程代码（键）
+          const courseCodes = Object.keys(raw.enrollDict).join(" ");
+          // 将课程代码添加到输入框中
+          const inputBox = document.getElementById("input-box");
+          inputBox.value = courseCodes;
+          // 将课程代码保存到 settings 中的一个字段
+          settings.savedCourseCodes = courseCodes;
+
           tip({
             type: "warning",
             message: "登录信息发生变动，已清空抢课列表",
             duration: 1000,
           });
           enrollDict = {};
-          settings.jwt = sessionStorage.token;
+          settings.token = sessionStorage.token;
           methods.saveCourse();
+        } else if (settings.savedCourseCodes) {
+          // 如果 raw.enrollDict 为空，从 settings 中恢复课程代码
+          const inputBox = document.getElementById("input-box");
+          inputBox.value = settings.savedCourseCodes;
         }
       } else {
-        settings.jwt = sessionStorage.token;
+        settings.token = sessionStorage.token;
       }
       isRunning = false;
+      shouldStop = false;
+      methods.updateUIState();
       window.Components.reloadList();
-    },
-    checkVersion() {
-      request
-        .get("https://api.seutools.com/enroll/", {
-          transformRequest: [
-            (data, headers) => {
-              delete headers.Authorization;
-              delete headers.batchId;
-              return data;
-            },
-          ],
-        })
-        .then((res) => {
-          if (res.data.version.split(".").map((x) => parseInt(x)) > version) {
-            document.getElementById("update-tip").style.display = "block";
-          }
-        });
     },
     //保存数据
     saveCourse() {
-      localStorage.setItem("huhu", JSON.stringify({ enrollDict, settings }));
+      localStorage.setItem("july", JSON.stringify({ enrollDict, settings }));
     },
     //处理按钮拖动与点击
     drag(e, node) {
@@ -710,14 +782,136 @@
         is_move = false;
       };
     },
+    // 更新UI状态（禁用/启用按钮）
+    updateUIState() {
+      const inputBox = document.getElementById("input-box");
+      const stopButton = document.getElementById("stop-button");
+      const listWrap = document.getElementById("list-wrap");
+
+      if (isRunning) {
+        inputBox.disabled = true;
+        inputBox.style.cursor = "not-allowed";
+        inputBox.style.opacity = "0.5";
+        stopButton.disabled = false;
+        stopButton.style.cursor = "pointer";
+        stopButton.style.opacity = "1";
+        // 禁用表格中的删除键
+        listWrap.querySelectorAll("button.delete-button").forEach((button) => {
+          button.disabled = true;
+          button.style.cursor = "not-allowed";
+          button.style.opacity = "0.5";
+        });
+        // 禁用添加课程按钮
+        document
+          .querySelectorAll("button.add-course-button")
+          .forEach((button) => {
+            button.disabled = true;
+            button.style.cursor = "not-allowed";
+            button.style.opacity = "0.5";
+          });
+      } else {
+        inputBox.disabled = false;
+        inputBox.style.cursor = "auto";
+        inputBox.style.opacity = "1";
+        stopButton.disabled = true;
+        stopButton.style.cursor = "not-allowed";
+        stopButton.style.opacity = "0.5";
+        // 启用表格中的删除键
+        listWrap.querySelectorAll("button.delete-button").forEach((button) => {
+          button.disabled = false;
+          button.style.cursor = "pointer";
+          button.style.opacity = "1";
+        });
+        // 启用添加课程按钮
+        document
+          .querySelectorAll("button.add-course-button")
+          .forEach((button) => {
+            button.disabled = false;
+            button.style.cursor = "pointer";
+            button.style.opacity = "1";
+          });
+      }
+    },
     // 处理输入框事件
     enter(e) {
-      let evt = window.event || e;
-      if (evt.keyCode === 13) {
+      if (e.key === "Enter") {
         let node = document.getElementById("input-box");
         let codeArray = node.value.toUpperCase().split(" ");
         let failedCodes = methods.addEnrollDict(codeArray.join(" "));
         node.value = failedCodes.join(" "); // 将失败的课程代码替换到输入框中
+      }
+    },
+    // 插入课程
+    insertCourse(code, currentCourseList, currentType) {
+      let courseCode = code.substring(0, 8);
+      let teacherCode = code.substring(8);
+
+      let courseFlag = false,
+        teacherFlag = false;
+      for (let course of currentCourseList) {
+        // 检查课程是否存在
+        if (course.KCH === courseCode) {
+          courseFlag = true;
+          // 检查教师是否存在
+          if (grablessonsVue.teachingClassType !== "XGKC") {
+            for (let teacher of course.tcList) {
+              if (teacher.KXH === teacherCode) {
+                enrollDict[code] = {
+                  courseBatch: grablessonsVue.lcParam.currentBatch.code,
+                  courseCode: teacher.JXBID,
+                  courseType: currentType,
+                  courseName: course.KCM,
+                  teacherName: teacher.SKJS,
+                  secretVal: teacher.secretVal,
+                };
+                teacherFlag = true;
+              }
+            }
+          } else {
+            if (course.KXH === teacherCode) {
+              enrollDict[code] = {
+                courseBatch: grablessonsVue.lcParam.currentBatch.code,
+                courseCode: course.JXBID,
+                courseType: currentType,
+                courseName: course.KCM,
+                teacherName: course.SKJS,
+                secretVal: course.secretVal,
+              };
+              teacherFlag = true;
+            }
+          }
+        }
+      }
+      return { courseFlag, teacherFlag };
+    },
+    // 处理课程插入逻辑
+    handleCourseInsertion(code, currentCourseList, currentType) {
+      let { courseFlag, teacherFlag } = methods.insertCourse(
+        code,
+        currentCourseList,
+        currentType
+      );
+
+      if (!courseFlag) {
+        return {
+          success: false,
+          message: "没有查找到该课程，请检查课程号",
+          type: "error",
+        };
+      } else if (!teacherFlag) {
+        console.log("无效的教师号: ", code.substring(8));
+        return {
+          success: false,
+          message: "没有查找到该教师，请检查教师号",
+          type: "error",
+        };
+      } else {
+        const course = enrollDict[code];
+        return {
+          success: true,
+          message: `成功添加 ${course.teacherName} 的 ${course.courseName}`,
+          type: "success",
+        };
       }
     },
     // 添加课程到抢课列表
@@ -731,73 +925,64 @@
       for (let i = 0; i < codeArray.length; i++) {
         let code = codeArray[i];
         if (!code) continue;
-        if (enrollDict[code]) {
+        const course = enrollDict[code];
+        if (course) {
           tip({
-            type: "warning",
-            message: "已经添加过了",
+            type: "error",
+            message: `${course.teacherName} 的 ${course.courseName} 已添加`,
             duration: 1000,
           });
           continue;
         }
-        let courseCode = code.substring(0, 8);
-        let teacherCode = code.substring(8);
 
-        let courseFlag = false,
-          teacherFlag = false;
-        for (let course of currentCourseList) {
-          // 检查课程是否存在
-          if (course.KCH === courseCode) {
-            courseFlag = true;
-            // 检查教师是否存在
-            if (grablessonsVue.teachingClassType !== "XGKC") {
-              for (let teacher of course.tcList) {
-                if (teacher.KXH === teacherCode) {
-                  enrollDict[code] = {
-                    courseBatch: grablessonsVue.lcParam.currentBatch.code,
-                    courseCode: teacher.JXBID,
-                    courseType: currentType,
-                    courseName: course.KCM,
-                    teacherName: teacher.SKJS,
-                    secretVal: teacher.secretVal,
-                  };
-                  teacherFlag = true;
-                }
-              }
-            } else {
-              if (course.KXH === teacherCode) {
-                enrollDict[code] = {
-                  courseBatch: grablessonsVue.lcParam.currentBatch.code,
-                  courseCode: course.JXBID,
-                  courseType: currentType,
-                  courseName: course.KCM,
-                  teacherName: course.SKJS,
-                  secretVal: course.secretVal,
-                };
-                teacherFlag = true;
-              }
-            }
-          }
-        }
-        if (!courseFlag) {
+        let result = methods.handleCourseInsertion(
+          code,
+          currentCourseList,
+          currentType
+        );
+
+        if (!result.success) {
           failedCodes.push(code); // 添加到失败的课程代码列表
-        } else if (!teacherFlag) {
-          tip({
-            type: "error",
-            message: "没有查找到该教师，请检查教师号",
-            duration: 1000,
-          });
-          console.log("无效的教师号: ", teacherCode);
-          failedCodes.push(code); // 添加到失败的课程代码列表
-        } else {
-          tip({
-            type: "success",
-            message: "添加成功",
-            duration: 1000,
-          });
         }
+        tip({
+          type: result.type,
+          message: result.message,
+          duration: 1000,
+        });
       }
       methods.saveCourse();
+      window.Components.reloadList();
       return failedCodes; // 返回失败的课程代码
+    },
+    // 添加单个课程到抢课列表
+    addSingleCourse(code) {
+      if (!code) return;
+      let currentType = grablessonsVue.teachingClassType;
+      let currentCourseList = grablessonsVue.courseList;
+      const course = enrollDict[code];
+      if (course) {
+        tip({
+          type: "error",
+          message: `${course.teacherName} 的 ${course.courseName} 已添加`,
+          duration: 1000,
+        });
+        return;
+      }
+
+      let result = methods.handleCourseInsertion(
+        code,
+        currentCourseList,
+        currentType
+      );
+
+      tip({
+        type: result.type,
+        message: result.message,
+        duration: 1000,
+      });
+
+      methods.saveCourse();
+      window.Components.reloadList();
     },
     //一键抢课
     enroll() {
@@ -809,18 +994,33 @@
       if (!key_list.length) {
         tip({
           type: "warning",
-          message: "还没有输入课程",
+          message: "抢课列表为空",
           duration: 1000,
         });
+        isRunning = false;
+        methods.updateUIState();
         return;
       }
 
-      const interval = 375; // 设置时间间隔，单位为毫秒
       let index = 0;
 
       const enrollCourse = () => {
         if (index >= key_list.length) {
-          return;
+          // 检查是否有剩余课程，如果有则重新开始
+          key_list = Object.keys(enrollDict).filter(
+            (key) =>
+              enrollDict[key].courseBatch ===
+              grablessonsVue.lcParam.currentBatch.code
+          );
+          if (key_list.length) {
+            index = 0;
+            setTimeout(enrollCourse, interval); // 在每次请求后设置时间间隔
+            return;
+          } else {
+            isRunning = false;
+            methods.updateUIState();
+            return;
+          }
         }
 
         const key = key_list[index];
@@ -837,13 +1037,29 @@
             secretVal: enrollDict[key].secretVal,
           }),
         }).then((res) => {
+          if (shouldStop) {
+            isRunning = false;
+            methods.updateUIState();
+            return;
+          }
           let type = res.data.code === 100 ? "success" : "warning";
           tip({
             type,
             message: enrollDict[key].courseName + ":" + res.data.msg,
             duration: 1000,
           });
-          index++;
+          if (res.data.code === 100) {
+            delete enrollDict[key]; // 移除成功的课程
+            methods.saveCourse();
+            window.Components.reloadList();
+            key_list = Object.keys(enrollDict).filter(
+              (key) =>
+                enrollDict[key].courseBatch ===
+                grablessonsVue.lcParam.currentBatch.code
+            );
+          } else {
+            index++;
+          }
           setTimeout(enrollCourse, interval); // 在每次请求后设置时间间隔
         });
       };
