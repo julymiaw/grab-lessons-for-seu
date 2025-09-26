@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        东南大学抢课助手修改版
 // @namespace   http://tampermonkey.net/
-// @version     3.2.0
+// @version     3.3.0
 // @description 听说你抢不到课
 // @author      july
 // @license     MIT
@@ -12,7 +12,7 @@
 
 (function () {
   // 版本
-  let version = [3, 2, 0];
+  let version = [3, 3, 0];
 
   // 请求
   let request = axios.create();
@@ -28,7 +28,6 @@
 
   // 设置
   let settings = {};
-  let tempSettings = null;
 
   // 定义默认设置
   const defaultSettings = {
@@ -38,6 +37,7 @@
       isAsync: false,
       isCyclic: true,
       cycleCount: -1, // -1表示无限循环
+      enableSearch: false,
     },
     interval: {
       sync: {
@@ -48,6 +48,10 @@
         single: 350, // 异步单次间隔
         group: 1000, // 异步分组间隔
       },
+    },
+    search: {
+      pageSize: 20, // 每页课程数量
+      pageDelay: 500, // 翻页延迟(ms)
     },
   };
 
@@ -229,24 +233,7 @@
                     await methods.stopEnrolling();
                   } else {
                     document.getElementById("mask").style.display = "block";
-                    self.createPopUp(
-                      "更多设置",
-                      self.showSettings(),
-                      () => {
-                        if (tempSettings) {
-                          Object.assign(settings, tempSettings);
-                          methods.saveData();
-                          tip({
-                            type: "success",
-                            message: "设置已保存",
-                            duration: 1000,
-                          });
-                          tempSettings = null; // 清理临时设置
-                        }
-                      },
-                      30,
-                      40
-                    );
+                    self.updatePopup(settings.mode.enableSearch, settings);
                   }
                 },
               },
@@ -344,15 +331,15 @@
                             obj: {
                               class: "delete-button",
                               style: `
-                            color: red;
-                            background: transparent;
-                            border: 1px solid red;
-                            border-radius: 6px;
-                            text-align: center;
-                            cursor: pointer;
-                            text-decoration: none;
-                            margin-right: 2px
-                          `,
+                                color: red;
+                                background: transparent;
+                                border: 1px solid red;
+                                border-radius: 6px;
+                                text-align: center;
+                                cursor: pointer;
+                                text-decoration: none;
+                                margin-right: 2px
+                              `,
                             },
                             ev: {
                               click: () => {
@@ -373,15 +360,15 @@
                             text: "更多",
                             obj: {
                               style: `
-                            color: orange;
-                            background: transparent;
-                            border: 1px solid orange;
-                            border-radius: 6px;
-                            text-align: center;
-                            cursor: pointer;
-                            text-decoration: none;
-                            margin-left: 2px
-                          `,
+                                color: orange;
+                                background: transparent;
+                                border: 1px solid orange;
+                                border-radius: 6px;
+                                text-align: center;
+                                cursor: pointer;
+                                text-decoration: none;
+                                margin-left: 2px
+                              `,
                             },
                             ev: {
                               click: () => {
@@ -425,7 +412,9 @@
         ev: {
           click: () => {
             node.style.display = "none";
-            app.removeChild(document.getElementsByClassName("temp")[0]);
+            document.querySelectorAll(".temp").forEach((el) => {
+              if (el.parentNode) el.parentNode.removeChild(el);
+            });
           },
         },
       });
@@ -433,142 +422,316 @@
     };
 
     // 生成弹出窗
-    self.createPopUp = (title, node, onConfirm, width, height) =>
-      app.appendChild(
-        self.createNode({
-          tagName: "div",
-          obj: {
-            class: "temp",
-            style: `
-              position: fixed;
-              left: ${width ? 50 - 0.5 * width : 30}%;
-              top: ${height ? 50 - 0.5 * height : 30}%;
-              width: ${width || 40}%;
-              height: ${height || 40}%;
-              z-index: 2021;
-              background-color: white;
-              border-radius: 30px;
-              overflow: auto;
-            `,
-          },
-          children: [
-            self.createNode({
-              tagName: "h1",
-              obj: {
-                style: `
-                  margin: 20px 0;
-                  width: 100%;
-                  text-align: center;
-                `,
-              },
-              text: title,
-            }),
-            node,
-            self.createNode({
-              tagName: "button",
-              obj: {
-                class: "el-button el-button--default el-button--large is-round",
-                style: `
-                  position: absolute;
-                  right:10%;
-                  bottom:10%
-                `,
-              },
-              text: "确定",
-              ev: {
-                click: () => {
-                  if (onConfirm) onConfirm();
-                  document.getElementById("mask").style.display = "none";
-                  app.removeChild(document.getElementsByClassName("temp")[0]);
+    self.createPopUp = (title, node, onConfirm, width, height, onExtend) => {
+      const popupNode = self.createNode({
+        tagName: "div",
+        obj: {
+          class: "temp",
+          style: `
+            position: fixed;
+            left: ${width ? 50 - 0.5 * width : 30}%;
+            top: ${height ? 50 - 0.5 * height : 30}%;
+            width: ${width || 40}%;
+            height: ${height || 40}%;
+            z-index: 2021;
+            background-color: white;
+            border-radius: 30px;
+            overflow: auto;
+          `,
+        },
+        children: [
+          self.createNode({
+            tagName: "h1",
+            obj: {
+              style: `
+                margin: 20px 0;
+                width: 100%;
+                text-align: center;
+              `,
+            },
+            text: title,
+          }),
+          node,
+          self.createNode({
+            tagName: "div",
+            obj: {
+              style: `
+                position: absolute;
+                width: 80%;
+                left: 10%;
+                bottom: 10%;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+              `,
+            },
+            children: [
+              // 左侧按钮组
+              self.createNode({
+                tagName: "div",
+                obj: {
+                  style: "display: flex; gap: 10%;",
                 },
-              },
-            }),
-          ],
-        })
+                children: [
+                  ...(onExtend
+                    ? [
+                        self.createNode({
+                          tagName: "button",
+                          obj: {
+                            class:
+                              "el-button el-button--primary el-button--large is-round",
+                          },
+                          text: "更多",
+                          ev: { click: onExtend },
+                        }),
+                      ]
+                    : []),
+                  // 如果存在其他temp类元素,说明当前不是第一层弹窗
+                  ...(document.querySelectorAll(".temp").length > 0
+                    ? [
+                        self.createNode({
+                          tagName: "button",
+                          obj: {
+                            class:
+                              "el-button el-button--warning el-button--large is-round",
+                          },
+                          text: "返回",
+                          ev: {
+                            click: () => {
+                              // 移除当前弹窗
+                              if (popupNode.parentNode) {
+                                popupNode.parentNode.removeChild(popupNode);
+                              }
+                            },
+                          },
+                        }),
+                      ]
+                    : []),
+                ],
+              }),
+              // 右侧确认按钮
+              self.createNode({
+                tagName: "button",
+                obj: {
+                  class:
+                    "el-button el-button--default el-button--large is-round",
+                },
+                text: "确定",
+                ev: {
+                  click: () => {
+                    if (onConfirm) onConfirm();
+                    if (document.querySelectorAll(".temp").length > 1) {
+                      if (popupNode.parentNode) {
+                        popupNode.parentNode.removeChild(popupNode);
+                      }
+                    } else {
+                      // 否则清除所有弹窗
+                      document.getElementById("mask").style.display = "none";
+                      document.querySelectorAll(".temp").forEach((el) => {
+                        if (el.parentNode) el.parentNode.removeChild(el);
+                      });
+                    }
+                  },
+                },
+              }),
+            ],
+          }),
+        ],
+        ev: {
+          // 阻止默认的表单提交行为
+          submit: (e) => e.preventDefault(),
+          // 阻止回车冒泡
+          keydown: (e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              e.stopPropagation();
+            }
+          },
+        },
+      });
+
+      app.appendChild(popupNode);
+      return popupNode;
+    };
+
+    self.currentPopup = null;
+
+    // 更新弹窗
+    self.updatePopup = (enableSearch, tempSettings) => {
+      // 如果存在旧弹窗，先移除
+      if (self.currentPopup && self.currentPopup.parentNode) {
+        self.currentPopup.parentNode.removeChild(self.currentPopup);
+      }
+
+      const mainSettings = self.showSettings(tempSettings);
+
+      // 创建新弹窗
+      self.currentPopup = self.createPopUp(
+        "设置",
+        mainSettings.node,
+        () => {
+          Object.assign(settings, mainSettings.tempSettings);
+          methods.saveData();
+          tip({
+            type: "success",
+            message: "设置已保存",
+            duration: 1000,
+          });
+        },
+        30,
+        40,
+        enableSearch
+          ? () => {
+              const searchSettings = self.showSearchSettings();
+              self.createPopUp(
+                "搜索设置",
+                searchSettings.node,
+                () => {
+                  Object.assign(settings, searchSettings.tempSettings);
+                  methods.saveData();
+                  tip({
+                    type: "success",
+                    message: "设置已保存",
+                    duration: 1000,
+                  });
+                },
+                30,
+                40
+              );
+            }
+          : null
       );
+    };
 
-    self.showSettings = () => {
-      // 创建临时设置对象
-      tempSettings = JSON.parse(JSON.stringify(settings));
-      let intervalInput = null;
+    // 数值输入框及其保存按钮
+    self.createNumberInput = (options) => {
+      const {
+        value, // 初始值
+        min, // 最小值
+        max, // 最大值
+        step, // 步进值
+        style, // 样式
+        onSave, // 保存回调
+        updateValue, // 值更新回调(可选)
+      } = options;
+
+      let inputElement = null;
       let saveButton = null;
+      let currentBaseValue = value;
 
+      // 创建更新按钮状态的函数
       const updateSaveButton = () => {
-        if (!intervalInput || !saveButton) return;
-
-        const currentValue = parseInt(intervalInput.value);
-        const expectedValue = methods.getCurrentInterval(tempSettings);
-        const isDifferent = currentValue !== expectedValue;
+        if (!inputElement || !saveButton) return;
+        const currentValue = parseInt(inputElement.value);
+        const isDifferent = currentValue !== currentBaseValue;
 
         saveButton.style.opacity = isDifferent ? "1" : "0.5";
         saveButton.style.cursor = isDifferent ? "pointer" : "not-allowed";
         saveButton.disabled = !isDifferent;
       };
 
-      const createIntervalInput = () => {
-        intervalInput = self.createNode({
-          tagName: "input",
-          obj: {
-            class: "el-input__inner",
-            type: "number",
-            value: methods.getCurrentInterval(tempSettings),
-            min: tempSettings.mode.isGrouped ? "1000" : "100",
-            max: tempSettings.mode.isGrouped ? "2000" : "1000",
-            step: "25",
-            style: `
-                  width: 40%;
-                  margin-left: 2%;
-                  margin-right: 2%;
-                  height: 30px
-                `,
+      // 提供更新基准值的函数
+      const updateBaseValue = (newValue) => {
+        currentBaseValue = newValue;
+        updateSaveButton();
+      };
+
+      // 创建输入框
+      inputElement = self.createNode({
+        tagName: "input",
+        obj: {
+          class: "el-input__inner",
+          type: "number",
+          value: value,
+          min: min,
+          max: max,
+          step: step,
+          style:
+            style ||
+            "width: 40%; margin-left: 2%; margin-right: 2%; height: 30px",
+        },
+        ev: {
+          input: updateSaveButton,
+          wheel: (e) => {
+            e.preventDefault();
+            const delta = e.deltaY > 0 ? -parseInt(step) : parseInt(step);
+            const newValue = Math.max(
+              parseInt(min),
+              Math.min(parseInt(max), parseInt(e.target.value) + delta)
+            );
+            e.target.value = newValue;
+            updateSaveButton();
+            if (updateValue) updateValue(newValue);
           },
-          ev: {
-            input: updateSaveButton,
-            wheel: (e) => {
+          keydown: (e) => {
+            if (e.key === "Enter") {
               e.preventDefault();
-              const delta = e.deltaY > 0 ? -25 : 25;
+              saveButton.click();
+            } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+              e.preventDefault();
+              const delta =
+                e.key === "ArrowUp" ? parseInt(step) : -parseInt(step);
               const newValue = Math.max(
-                parseInt(e.target.min),
-                Math.min(
-                  parseInt(e.target.max),
-                  parseInt(e.target.value) + delta
-                )
+                parseInt(min),
+                Math.min(parseInt(max), parseInt(e.target.value) + delta)
               );
               e.target.value = newValue;
               updateSaveButton();
-            },
+              if (updateValue) updateValue(newValue);
+            }
           },
-        });
-        return intervalInput;
-      };
+        },
+      });
 
-      const createSaveButton = () => {
-        saveButton = self.createNode({
-          tagName: "button",
-          obj: {
-            class: "el-button el-button--primary el-button--small",
-            style: "opacity: 0.5; cursor: not-allowed",
-            disabled: true,
+      // 创建保存按钮
+      saveButton = self.createNode({
+        tagName: "button",
+        obj: {
+          class: "el-button el-button--primary el-button--small",
+          style: "opacity: 0.5; cursor: not-allowed",
+          disabled: true,
+        },
+        text: "应用",
+        ev: {
+          click: () => {
+            onSave(parseInt(inputElement.value));
+            saveButton.style.opacity = "0.5";
+            saveButton.style.cursor = "not-allowed";
+            saveButton.disabled = true;
           },
-          text: "应用",
-          ev: {
-            click: () => {
-              const mode = tempSettings.mode.isAsync ? "async" : "sync";
-              const type = tempSettings.mode.isGrouped ? "group" : "single";
-              tempSettings.interval[mode][type] = parseInt(intervalInput.value);
-              saveButton.style.opacity = "0.5";
-              saveButton.style.cursor = "not-allowed";
-              saveButton.disabled = true;
-            },
-          },
-        });
-        return saveButton;
+        },
+      });
+
+      return {
+        input: inputElement,
+        button: saveButton,
+        updateSaveButton: updateSaveButton,
+        updateBaseValue: updateBaseValue,
       };
+    };
+
+    // 设置
+    self.showSettings = (tempSettings) => {
+      tempSettings = tempSettings
+        ? tempSettings
+        : JSON.parse(JSON.stringify(settings));
+
+      const intervalInput = self.createNumberInput({
+        value: methods.getCurrentInterval(tempSettings),
+        min: tempSettings.mode.isGrouped ? "1000" : "100",
+        max: tempSettings.mode.isGrouped ? "2000" : "1000",
+        step: "25",
+        onSave: (value) => {
+          const mode = tempSettings.mode.isAsync ? "async" : "sync";
+          const type = tempSettings.mode.isGrouped ? "group" : "single";
+          tempSettings.interval[mode][type] = value;
+        },
+      });
 
       const settingsNode = self.createNode({
         tagName: "div",
         obj: {
-          style: "margin: 10%",
+          style: "margin-left: 10%",
         },
         children: [
           // 抢课方式选择
@@ -652,9 +815,9 @@
                 ev: {
                   change: (e) => {
                     tempSettings.mode.isAsync = !e.target.checked;
-                    intervalInput.value =
-                      methods.getCurrentInterval(tempSettings);
-                    updateSaveButton();
+                    const newValue = methods.getCurrentInterval(tempSettings);
+                    intervalInput.input.value = newValue;
+                    intervalInput.updateBaseValue(newValue); // 更新基准值
                   },
                 },
               }),
@@ -676,9 +839,9 @@
                 ev: {
                   change: (e) => {
                     tempSettings.mode.isAsync = e.target.checked;
-                    intervalInput.value =
-                      methods.getCurrentInterval(tempSettings);
-                    updateSaveButton();
+                    const newValue = methods.getCurrentInterval(tempSettings);
+                    intervalInput.input.value = newValue;
+                    intervalInput.updateBaseValue(newValue); // 更新基准值
                   },
                 },
               }),
@@ -715,9 +878,9 @@
                 ev: {
                   change: (e) => {
                     tempSettings.mode.isGrouped = !e.target.checked;
-                    intervalInput.value =
-                      methods.getCurrentInterval(tempSettings);
-                    updateSaveButton();
+                    const newValue = methods.getCurrentInterval(tempSettings);
+                    intervalInput.input.value = newValue;
+                    intervalInput.updateBaseValue(newValue); // 更新基准值
                   },
                 },
               }),
@@ -739,9 +902,9 @@
                 ev: {
                   change: (e) => {
                     tempSettings.mode.isGrouped = e.target.checked;
-                    intervalInput.value =
-                      methods.getCurrentInterval(tempSettings);
-                    updateSaveButton();
+                    const newValue = methods.getCurrentInterval(tempSettings);
+                    intervalInput.input.value = newValue;
+                    intervalInput.updateBaseValue(newValue); // 更新基准值
                   },
                 },
               }),
@@ -768,8 +931,37 @@
                   style: "margin-right: 10px",
                 },
               }),
-              createIntervalInput(),
-              createSaveButton(),
+              intervalInput.input,
+              intervalInput.button,
+            ],
+          }),
+          // 搜索功能启用开关
+          self.createNode({
+            tagName: "div",
+            obj: {
+              style: "margin-top: 5%",
+            },
+            children: [
+              self.createNode({
+                tagName: "label",
+                text: "启用搜索功能：",
+                obj: {
+                  style: "margin-right: 5%",
+                },
+              }),
+              self.createNode({
+                tagName: "input",
+                obj: {
+                  type: "checkbox",
+                  id: "enable-search",
+                },
+                ev: {
+                  change: (e) => {
+                    tempSettings.mode.enableSearch = e.target.checked;
+                    self.updatePopup(e.target.checked, tempSettings);
+                  },
+                },
+              }),
             ],
           }),
         ],
@@ -784,6 +976,7 @@
         const asyncModeInput = settingsNode.querySelector("#async-mode");
         const singleSendInput = settingsNode.querySelector("#single-send");
         const groupSendInput = settingsNode.querySelector("#group-send");
+        const enableSearchInput = settingsNode.querySelector("#enable-search");
 
         // 根据设置初始化抢课方式
         if (tempSettings.mode.isCyclic) {
@@ -805,9 +998,83 @@
         } else {
           singleSendInput.checked = true;
         }
+
+        // 根据设置初始化搜索功能开关
+        if (tempSettings.mode.enableSearch) {
+          enableSearchInput.checked = true;
+        }
       }, 0);
 
-      return settingsNode;
+      return {
+        node: settingsNode,
+        tempSettings: tempSettings,
+      };
+    };
+
+    // 搜索设置
+    self.showSearchSettings = () => {
+      // 创建临时设置对象和引用变量
+      const tempSettings = JSON.parse(JSON.stringify(settings));
+
+      const pageSizeInput = self.createNumberInput({
+        value: tempSettings.search.pageSize,
+        min: "10",
+        max: "100",
+        step: "10",
+        onSave: (value) => {
+          tempSettings.search.pageSize = value;
+        },
+      });
+
+      const pageDelayInput = self.createNumberInput({
+        value: tempSettings.search.pageDelay,
+        min: "100",
+        max: "2000",
+        step: "100",
+        onSave: (value) => {
+          tempSettings.search.pageDelay = value;
+        },
+      });
+
+      const settingsNode = self.createNode({
+        tagName: "div",
+        obj: { style: "margin: 10%" },
+        children: [
+          // 每页数量设置
+          self.createNode({
+            tagName: "div",
+            obj: { style: "margin-bottom: 5%" },
+            children: [
+              self.createNode({
+                tagName: "label",
+                text: "每页数量：",
+                obj: { style: "margin-right: 10%" },
+              }),
+              pageSizeInput.input,
+              pageSizeInput.button,
+            ],
+          }),
+          // 翻页延迟设置
+          self.createNode({
+            tagName: "div",
+            obj: { style: "margin-bottom: 5%" },
+            children: [
+              self.createNode({
+                tagName: "label",
+                text: "翻页延迟：",
+                obj: { style: "margin-right: 10%" },
+              }),
+              pageDelayInput.input,
+              pageDelayInput.button,
+            ],
+          }),
+        ],
+      });
+
+      return {
+        node: settingsNode,
+        tempSettings: tempSettings,
+      };
     };
 
     // 生成课程详情信息
@@ -1064,18 +1331,96 @@
         if (settings.token === sessionStorage.token) {
           enrollDict = raw.enrollDict;
         } else if (raw.enrollDict && JSON.stringify(raw.enrollDict) !== "{}") {
-          const courseCodes = Object.keys(raw.enrollDict).join(" ");
+          const courseCodes = Object.keys(raw.enrollDict);
           const inputBox = document.getElementById("input-box");
-          inputBox.value = courseCodes;
-          settings.savedCourseCodes = courseCodes;
+          inputBox.value = courseCodes.join(" ");
 
-          tip({
-            type: "warning",
-            message: "登录信息发生变动，已清空抢课列表",
-            duration: 1000,
-          });
+          if (settings.mode.enableSearch) {
+            tip({
+              type: "warning",
+              message: "token失效，尝试重新添加课程",
+              duration: 2000,
+            });
 
-          enrollDict = {};
+            enrollDict = {};
+
+            // 课程类型中文映射
+            const typeNames = {
+              TJKC: "推荐课程",
+              FANKC: "方案内课程",
+              FAWKC: "方案外课程",
+              TYKC: "体育项目",
+              XGKC: "通选课",
+            };
+
+            // 尝试在不同类型中查找课程
+            const types = ["TJKC", "FANKC", "FAWKC", "TYKC", "XGKC"];
+            let remainingCodes = courseCodes;
+
+            const pageSize = settings.search.pageSize;
+
+            for (let type of types) {
+              if (!remainingCodes.length) break;
+              let pageNumber = 1;
+              while (true) {
+                if (!remainingCodes.length) break;
+                await new Promise((resolve) =>
+                  setTimeout(resolve, settings.search.pageDelay)
+                );
+                const { courseList, total } = await methods.searchCourse(
+                  type,
+                  pageNumber,
+                  pageSize
+                );
+
+                if (!courseList.length) break;
+
+                // 每页获取后立即尝试添加
+                if (courseList.length > 0) {
+                  remainingCodes = methods.addEnrollDict(
+                    remainingCodes.join(" "),
+                    type,
+                    courseList,
+                    false
+                  );
+                }
+                inputBox.value = remainingCodes.join(" ");
+
+                tip({
+                  type: "success",
+                  message: `已获取 ${typeNames[type]} 第 ${pageNumber} 页，剩余未找到课程：${remainingCodes.length}门`,
+                  duration: 2000,
+                });
+
+                if (pageNumber * pageSize >= total) break;
+
+                pageNumber++;
+              }
+            }
+
+            if (remainingCodes.length > 0) {
+              tip({
+                type: "warning",
+                message: `以下课程未找到：${remainingCodes}`,
+                duration: 2000,
+              });
+            }
+
+            settings.savedCourseCodes = remainingCodes.join(" ");
+          } else {
+            // 未启用搜索功能时的处理逻辑
+            const codeStr = courseCodes.join(" ");
+            inputBox.value = codeStr;
+            settings.savedCourseCodes = codeStr;
+
+            tip({
+              type: "warning",
+              message: "登录信息发生变动，已清空抢课列表",
+              duration: 1000,
+            });
+
+            enrollDict = {};
+          }
         }
       }
 
@@ -1223,7 +1568,7 @@
         if (course.KCH === courseCode) {
           courseFlag = true;
           // 检查教师是否存在
-          if (grablessonsVue.teachingClassType !== "XGKC") {
+          if (currentType !== "XGKC") {
             for (let teacher of course.tcList) {
               if (teacher.KXH === teacherCode) {
                 enrollDict[code] = createCourseInfo(course, teacher);
@@ -1271,23 +1616,32 @@
       }
     },
     // 添加课程到抢课列表
-    addEnrollDict(str) {
+    addEnrollDict(
+      str,
+      currentType = null,
+      currentCourseList = null,
+      showTip = true
+    ) {
       if (!str) return [];
-      let currentType = grablessonsVue.teachingClassType;
-      let currentCourseList = grablessonsVue.courseList;
+      // 如果没有传入参数，使用默认值
+      currentType = currentType || grablessonsVue.teachingClassType;
+      currentCourseList = currentCourseList || grablessonsVue.courseList;
+
       let codeArray = str.split(" ");
-      let failedCodes = []; // 用于存储添加失败的课程代码
+      let failedCodes = [];
 
       for (let i = 0; i < codeArray.length; i++) {
         let code = codeArray[i];
         if (!code) continue;
         const course = enrollDict[code];
         if (course) {
-          tip({
-            type: "error",
-            message: `${course.teacherName} 的 ${course.courseName} 已添加`,
-            duration: 1000,
-          });
+          if (showTip) {
+            tip({
+              type: "error",
+              message: `${course.teacherName} 的 ${course.courseName} 已添加`,
+              duration: 1000,
+            });
+          }
           continue;
         }
 
@@ -1298,19 +1652,21 @@
         );
 
         if (!result.success) {
-          failedCodes.push(code); // 添加到失败的课程代码列表
+          failedCodes.push(code);
         }
-        tip({
-          type: result.type,
-          message: result.message,
-          duration: 1000,
-        });
+        if (showTip) {
+          tip({
+            type: result.type,
+            message: result.message,
+            duration: 1000,
+          });
+        }
       }
       methods.saveData();
       window.Components.reloadList();
-      return failedCodes; // 返回失败的课程代码
+      return failedCodes;
     },
-    // 添加单个课程到抢课列表
+    // 通过页面按钮添加课程
     addSingleCourse(code) {
       if (!code) return;
       let currentType = grablessonsVue.teachingClassType;
@@ -1502,27 +1858,24 @@
       methods.updateUIState();
     },
     // 搜索课程
-    async searchCourse() {
-      // 构建请求参数
+    async searchCourse(type, pageNumber, pageSize) {
       const params = {
-        teachingClassType: grablessonsVue.teachingClassType,
-        pageNumber: 1,
-        pageSize: grablessonsVue.pubParam.pageSize,
+        teachingClassType: type,
+        pageNumber: pageNumber,
+        pageSize: pageSize,
         orderBy: "",
+        campus: grablessonsVue.currentCampus.code,
       };
-
-      // 添加校区参数
-      if (grablessonsVue.teachingClassType !== "ALLKC") {
-        params.campus = grablessonsVue.currentCampus.code;
-      }
 
       try {
         const response = await request.post("/elective/clazz/list", params);
         const { data } = response;
 
         if (data && data.code === 200) {
-          const courseList = data.data.rows;
-          return courseList;
+          return {
+            courseList: data.data.rows,
+            total: data.data.total,
+          };
         }
       } catch (error) {
         console.error("搜索课程失败:", error);
@@ -1533,7 +1886,7 @@
         });
       }
 
-      return [];
+      return { courseList: [], total: 0 };
     },
   };
   window.Components.mount();
