@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        东南大学抢课助手修改版
 // @namespace   http://tampermonkey.net/
-// @version     3.3.0
+// @version     3.4.0
 // @description 听说你抢不到课
 // @author      july
 // @license     MIT
@@ -12,7 +12,7 @@
 
 (function () {
   // 版本
-  let version = [3, 3, 0];
+  let version = [3, 4, 0];
 
   // 请求
   let request = axios.create();
@@ -37,7 +37,7 @@
       isAsync: false,
       isCyclic: true,
       cycleCount: -1, // -1表示无限循环
-      enableSearch: false,
+      enableSearch: true,
     },
     interval: {
       sync: {
@@ -52,6 +52,9 @@
     search: {
       pageSize: 20, // 每页课程数量
       pageDelay: 500, // 翻页延迟(ms)
+    },
+    announcement: {
+      hasRead: false, // 是否已读
     },
   };
 
@@ -376,7 +379,10 @@
                                   "block";
                                 self.createPopUp(
                                   "详细信息",
-                                  self.showCourseDetails(enrollDict[key])
+                                  self.showCourseDetails(enrollDict[key]),
+                                  null,
+                                  40,
+                                  50
                                 );
                               },
                             },
@@ -579,7 +585,7 @@
           });
         },
         30,
-        40,
+        45,
         enableSearch
           ? () => {
               const searchSettings = self.showSearchSettings();
@@ -596,14 +602,14 @@
                   });
                 },
                 30,
-                40
+                45
               );
             }
           : null
       );
     };
 
-    // 数值输入框及其保存按钮
+    // 数值输入框
     self.createNumberInput = (options) => {
       const {
         value, // 初始值
@@ -616,24 +622,16 @@
       } = options;
 
       let inputElement = null;
-      let saveButton = null;
       let currentBaseValue = value;
 
-      // 创建更新按钮状态的函数
-      const updateSaveButton = () => {
-        if (!inputElement || !saveButton) return;
+      // 自动保存函数
+      const autoSave = () => {
+        if (!inputElement) return;
         const currentValue = parseInt(inputElement.value);
-        const isDifferent = currentValue !== currentBaseValue;
-
-        saveButton.style.opacity = isDifferent ? "1" : "0.5";
-        saveButton.style.cursor = isDifferent ? "pointer" : "not-allowed";
-        saveButton.disabled = !isDifferent;
-      };
-
-      // 提供更新基准值的函数
-      const updateBaseValue = (newValue) => {
-        currentBaseValue = newValue;
-        updateSaveButton();
+        if (currentValue !== currentBaseValue) {
+          onSave(currentValue);
+          currentBaseValue = currentValue;
+        }
       };
 
       // 创建输入框
@@ -648,10 +646,10 @@
           step: step,
           style:
             style ||
-            "width: 40%; margin-left: 2%; margin-right: 2%; height: 30px",
+            "width: 60%; margin-left: 2%; margin-right: 2%; height: 30px",
         },
         ev: {
-          input: updateSaveButton,
+          blur: autoSave, // 失去焦点时自动保存
           wheel: (e) => {
             e.preventDefault();
             const delta = e.deltaY > 0 ? -parseInt(step) : parseInt(step);
@@ -660,13 +658,14 @@
               Math.min(parseInt(max), parseInt(e.target.value) + delta)
             );
             e.target.value = newValue;
-            updateSaveButton();
+            autoSave(); // 滚轮修改后立即保存
             if (updateValue) updateValue(newValue);
           },
           keydown: (e) => {
             if (e.key === "Enter") {
               e.preventDefault();
-              saveButton.click();
+              autoSave(); // 按回车时自动保存
+              e.target.blur(); // 失去焦点
             } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
               e.preventDefault();
               const delta =
@@ -676,37 +675,15 @@
                 Math.min(parseInt(max), parseInt(e.target.value) + delta)
               );
               e.target.value = newValue;
-              updateSaveButton();
+              autoSave(); // 方向键修改后立即保存
               if (updateValue) updateValue(newValue);
             }
           },
         },
       });
 
-      // 创建保存按钮
-      saveButton = self.createNode({
-        tagName: "button",
-        obj: {
-          class: "el-button el-button--primary el-button--small",
-          style: "opacity: 0.5; cursor: not-allowed",
-          disabled: true,
-        },
-        text: "应用",
-        ev: {
-          click: () => {
-            onSave(parseInt(inputElement.value));
-            saveButton.style.opacity = "0.5";
-            saveButton.style.cursor = "not-allowed";
-            saveButton.disabled = true;
-          },
-        },
-      });
-
       return {
         input: inputElement,
-        button: saveButton,
-        updateSaveButton: updateSaveButton,
-        updateBaseValue: updateBaseValue,
       };
     };
 
@@ -817,7 +794,6 @@
                     tempSettings.mode.isAsync = !e.target.checked;
                     const newValue = methods.getCurrentInterval(tempSettings);
                     intervalInput.input.value = newValue;
-                    intervalInput.updateBaseValue(newValue); // 更新基准值
                   },
                 },
               }),
@@ -841,7 +817,6 @@
                     tempSettings.mode.isAsync = e.target.checked;
                     const newValue = methods.getCurrentInterval(tempSettings);
                     intervalInput.input.value = newValue;
-                    intervalInput.updateBaseValue(newValue); // 更新基准值
                   },
                 },
               }),
@@ -880,7 +855,6 @@
                     tempSettings.mode.isGrouped = !e.target.checked;
                     const newValue = methods.getCurrentInterval(tempSettings);
                     intervalInput.input.value = newValue;
-                    intervalInput.updateBaseValue(newValue); // 更新基准值
                   },
                 },
               }),
@@ -904,7 +878,6 @@
                     tempSettings.mode.isGrouped = e.target.checked;
                     const newValue = methods.getCurrentInterval(tempSettings);
                     intervalInput.input.value = newValue;
-                    intervalInput.updateBaseValue(newValue); // 更新基准值
                   },
                 },
               }),
@@ -932,7 +905,6 @@
                 },
               }),
               intervalInput.input,
-              intervalInput.button,
             ],
           }),
           // 搜索功能启用开关
@@ -1051,7 +1023,6 @@
                 obj: { style: "margin-right: 10%" },
               }),
               pageSizeInput.input,
-              pageSizeInput.button,
             ],
           }),
           // 翻页延迟设置
@@ -1065,7 +1036,6 @@
                 obj: { style: "margin-right: 10%" },
               }),
               pageDelayInput.input,
-              pageDelayInput.button,
             ],
           }),
         ],
@@ -1211,6 +1181,168 @@
           }),
         ],
       });
+    };
+
+    // 显示公告弹窗
+    self.showAnnouncement = () => {
+      // 显示弹窗时立即标记为已读
+      settings.announcement.hasRead = true;
+      methods.saveData();
+
+      const announcementNode = self.createNode({
+        tagName: "div",
+        obj: {
+          style: `
+            margin: 5% 10%;
+            padding: 20px;
+            background-color: #fff3cd;
+            border: 2px solid #ffc107;
+            border-radius: 10px;
+          `,
+        },
+        children: [
+          self.createNode({
+            tagName: "p",
+            obj: {
+              style: `
+                color: #333;
+                line-height: 1.8;
+                text-indent: 2em;
+                margin-bottom: 10px;
+              `,
+            },
+            text: "请各位同学秉持诚信原则参与选课，严禁使用脚本、代码等任何手段(无论有意或无意)干扰、破坏选课秩序；学校将对选课数据进行后台异常监测，一经查实违规行为，将直接判定选课结果无效，并根据情节轻重依规给予相应纪律处分。",
+          }),
+          self.createNode({
+            tagName: "p",
+            obj: {
+              style: `
+                color: #333;
+                line-height: 1.8;
+                text-indent: 2em;
+              `,
+            },
+            text: "在此提醒大家，自觉抵制各类非法课程资源交易。若发现网上存在非法售卖本校课程资源、诱导同学参与违规交易等情况，请第一时间向学院或教务处提供线索。让我们携手监督、共同行动，以实际行动维护公平、诚信、有序的选课氛围，筑牢校园学术诚信防线。",
+          }),
+        ],
+      });
+
+      // 关闭公告弹窗的函数（需要在使用前定义）
+      const closeAnnouncement = () => {
+        const mask = document.getElementById("mask");
+        if (mask) mask.style.display = "none";
+        if (popupNode && popupNode.parentNode) {
+          popupNode.parentNode.removeChild(popupNode);
+        }
+      };
+
+      const popupNode = self.createNode({
+        tagName: "div",
+        obj: {
+          class: "announcement-popup",
+          style: `
+            position: fixed;
+            left: 25%;
+            top: 20%;
+            width: 50%;
+            max-height: 60%;
+            z-index: 2021;
+            background-color: white;
+            border-radius: 30px;
+            overflow: auto;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+          `,
+        },
+        children: [
+          self.createNode({
+            tagName: "h1",
+            obj: {
+              style: `
+                margin: 20px 0;
+                width: 100%;
+                text-align: center;
+                color: #d9534f;
+              `,
+            },
+            text: "特别提醒（转）",
+          }),
+          announcementNode,
+          self.createNode({
+            tagName: "div",
+            obj: {
+              style: `
+                position: relative;
+                width: 80%;
+                left: 10%;
+                margin: 20px 0;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+              `,
+            },
+            children: [
+              self.createNode({
+                tagName: "div",
+                obj: {
+                  style: "display: flex; align-items: center;",
+                },
+                children: [
+                  self.createNode({
+                    tagName: "input",
+                    obj: {
+                      type: "checkbox",
+                      id: "dont-show-again",
+                      checked: true,
+                      style: "margin-right: 8px; cursor: pointer;",
+                    },
+                    ev: {
+                      change: (e) => {
+                        settings.announcement.hasRead = e.target.checked;
+                        methods.saveData();
+                      },
+                    },
+                  }),
+                  self.createNode({
+                    tagName: "label",
+                    text: "不再弹出",
+                    obj: {
+                      for: "dont-show-again",
+                      style: "cursor: pointer; user-select: none;",
+                    },
+                  }),
+                ],
+              }),
+              self.createNode({
+                tagName: "button",
+                obj: {
+                  class:
+                    "el-button el-button--primary el-button--large is-round",
+                },
+                text: "我知道了",
+                ev: {
+                  click: closeAnnouncement,
+                },
+              }),
+            ],
+          }),
+        ],
+      });
+
+      // 显示遮罩，并设置点击事件
+      const mask = document.getElementById("mask");
+      if (mask) {
+        mask.style.display = "block";
+        // 为遮罩添加一次性点击事件监听器
+        const maskClickHandler = (e) => {
+          if (e.target === mask) {
+            closeAnnouncement();
+            mask.removeEventListener("click", maskClickHandler);
+          }
+        };
+        mask.addEventListener("click", maskClickHandler);
+      }
+
+      app.appendChild(popupNode);
     };
 
     //生成抢课按钮
@@ -1437,6 +1569,14 @@
 
       // 保存清理后的数据
       methods.saveData();
+
+      // 检查是否需要显示公告（未读时显示）
+      if (!settings.announcement.hasRead) {
+        // 延迟显示公告，确保页面已完全加载
+        setTimeout(() => {
+          window.Components.showAnnouncement();
+        }, 500);
+      }
     },
     // 保存数据到本地存储
     saveData() {
@@ -1530,11 +1670,87 @@
       }
     },
     // 处理输入框事件
-    enter(e) {
+    async enter(e) {
       if (e.key === "Enter") {
         let node = document.getElementById("input-box");
         let codeArray = node.value.toUpperCase().split(" ");
         let failedCodes = methods.addEnrollDict(codeArray.join(" "));
+        
+        // 如果有失败的课程且启用了搜索功能，自动搜索
+        if (failedCodes.length > 0 && settings.mode.enableSearch) {
+          tip({
+            type: "info",
+            message: `当前页面未找到 ${failedCodes.length} 门课程，正在搜索...`,
+            duration: 2000,
+          });
+
+          const typeNames = {
+            TJKC: "推荐课程",
+            FANKC: "方案内课程",
+            FAWKC: "方案外课程",
+            TYKC: "体育项目",
+            XGKC: "通选课",
+          };
+
+          const types = ["TJKC", "FANKC", "FAWKC", "TYKC", "XGKC"];
+          let remainingCodes = failedCodes;
+          const pageSize = settings.search.pageSize;
+
+          for (let type of types) {
+            if (!remainingCodes.length) break;
+            let pageNumber = 1;
+            while (true) {
+              if (!remainingCodes.length) break;
+              await new Promise((resolve) =>
+                setTimeout(resolve, settings.search.pageDelay)
+              );
+              const { courseList, total } = await methods.searchCourse(
+                type,
+                pageNumber,
+                pageSize
+              );
+
+              if (!courseList.length) break;
+
+              if (courseList.length > 0) {
+                remainingCodes = methods.addEnrollDict(
+                  remainingCodes.join(" "),
+                  type,
+                  courseList,
+                  false
+                );
+              }
+              node.value = remainingCodes.join(" ");
+
+              tip({
+                type: "success",
+                message: `已获取 ${typeNames[type]} 第 ${pageNumber} 页，剩余未找到课程：${remainingCodes.length}门`,
+                duration: 2000,
+              });
+
+              if (pageNumber * pageSize >= total) break;
+              pageNumber++;
+            }
+          }
+
+          if (remainingCodes.length > 0) {
+            tip({
+              type: "warning",
+              message: `以下课程未找到：${remainingCodes.join(" ")}`,
+              duration: 2000,
+            });
+          } else {
+            tip({
+              type: "success",
+              message: "所有课程已成功添加",
+              duration: 2000,
+            });
+          }
+          
+          // 搜索完成后，使用搜索后的剩余课程
+          failedCodes = remainingCodes;
+        }
+        
         node.value = failedCodes.join(" "); // 将失败的课程代码替换到输入框中
       }
     },
