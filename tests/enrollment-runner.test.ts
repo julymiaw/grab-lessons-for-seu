@@ -16,7 +16,7 @@ describe("EnrollmentRunner", () => {
     const runner = new EnrollmentRunner();
     const calls: string[] = []; let remaining = [course, { ...course, key: "B" }, { ...course, key: "C" }];
     const api = { addCourse: async (item: CourseSelection) => { calls.push(item.key); return { ok: true, message: "ok" }; } };
-    await runner.start({ api: api as never, settings: { ...defaultSettings, mode: { ...defaultSettings.mode, isAsync: true, isGrouped: true }, interval: { ...defaultSettings.interval, async: { single: 0, group: 0 } } }, getCourses: () => remaining, remove: (key) => { remaining = remaining.filter((item) => item.key !== key); }, notify: () => undefined });
+    await runner.start({ api: api as never, settings: { ...defaultSettings, mode: { ...defaultSettings.mode, isAsync: true, isGrouped: true, batchSize: 3 }, interval: { ...defaultSettings.interval, async: { ...defaultSettings.interval.async, single: 0, group: 0, byBatch: { 1: 0, 2: 0, 3: 0 } } } }, getCourses: () => remaining, remove: (key) => { remaining = remaining.filter((item) => item.key !== key); }, notify: () => undefined });
     expect(calls).toEqual(["A", "B", "C"]);
   });
 });

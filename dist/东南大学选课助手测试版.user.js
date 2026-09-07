@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         东南大学选课助手（测试版）
 // @namespace    https://github.com/julymiaw/grab-lessons-for-seu
-// @version      4.0.0
+// @version      4.0.1
 // @author       july
 // @description  实验性重构版本，尚未经真实选课系统验证
 // @license      MIT
@@ -512,6 +512,7 @@
   const o = s.litElementPolyfillSupport;
   o?.({ LitElement: i });
   (s.litElementVersions ??= []).push("4.2.2");
+  const names = { TJKC: "推荐课程", FANKC: "方案内课程", FAWKC: "方案外课程", TYKC: "体育项目", XGKC: "通选课" };
   class GrabLessonsApp extends i {
     static properties = { courses: { state: true }, settings: { state: true }, running: { state: true } };
     courses = [];
@@ -521,63 +522,92 @@
     onStop;
     onRemove;
     onAdd;
+    onReorder;
     onSettingsChange;
-    static styles = i$3`
-    :host { color: #182235; font: 14px/1.45 system-ui, -apple-system, sans-serif; }
-    button,input { font: inherit; } .launcher { position: fixed; right: 22px; bottom: 22px; z-index: 2147483646; border: 0; border-radius: 999px; background: #1d4ed8; color: white; padding: 12px 16px; box-shadow: 0 8px 24px #0004; cursor: pointer; }
-    .panel { position: fixed; right: 22px; bottom: 76px; z-index: 2147483646; width: min(390px, calc(100vw - 32px)); max-height: min(650px, calc(100vh - 104px)); overflow: auto; box-sizing: border-box; border-radius: 16px; background: #fff; box-shadow: 0 16px 48px #0004; padding: 18px; }
-    header { display:flex; justify-content:space-between; align-items:center; gap:8px; } h2 { margin:0; font-size:18px; } .muted { color:#64748b; font-size:12px; } .entry { display:flex; gap:8px; margin:16px 0; } input { min-width:0; flex:1; border:1px solid #cbd5e1; border-radius:8px; padding:8px 10px; } button { border:0; border-radius:8px; padding:8px 10px; cursor:pointer; } .primary { background:#1d4ed8; color:white; } .danger { background:#dc2626; color:white; } .course { display:grid; grid-template-columns:1fr auto; gap:8px; border-top:1px solid #e2e8f0; padding:10px 0; } .course strong,.course span { display:block; } .course span { color:#64748b; font-size:12px; } .remove { color:#b91c1c; background:#fee2e2; align-self:center; } .empty { text-align:center; color:#64748b; padding:20px; }
-  `;
     #open = true;
+    #modal = null;
+    #selected = 0;
+    #detail = null;
+    #drag = -1;
+    static styles = i$3`:host{font:14px system-ui;color:#182235}button,input{font:inherit}button{cursor:pointer;border:0;border-radius:8px;padding:8px}.launcher{position:fixed;right:22px;bottom:22px;z-index:9;background:#1d4ed8;color:white;border-radius:99px}.panel{position:fixed;right:22px;bottom:76px;z-index:9;width:390px;max-height:650px;overflow:auto;background:#fff;border-radius:16px;padding:18px;box-shadow:0 12px 38px #0005}header,.row{display:flex;justify-content:space-between;gap:8px;align-items:center}.primary{background:#1d4ed8;color:white}.danger{background:#dc2626;color:white}.entry{display:flex;gap:8px;margin:14px 0}.entry input{flex:1}.course{display:grid;grid-template-columns:auto 1fr auto;gap:8px;padding:10px 0;border-top:1px solid #e2e8f0;cursor:pointer}.course:hover,.course.selected{background:#eff6ff}.course:focus{outline:2px solid #1d4ed8}.muted{color:#64748b;font-size:12px}.handle{cursor:grab}.remove{color:#b91c1c}.modal{position:fixed;z-index:10;inset:0;background:#0007;display:grid;place-items:center}.dialog{width:min(560px,calc(100vw - 32px));max-height:80vh;overflow:auto;background:white;border-radius:14px;padding:20px}.dialog label{display:flex;gap:8px;align-items:center;margin:10px 0}.dialog input[type=number]{margin-left:auto;width:100px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}.order{display:flex;gap:8px;align-items:center;padding:7px;border-top:1px solid #e2e8f0;cursor:grab}`;
     render() {
-      return b`
-      <button class="launcher" @click=${() => {
+      return b`<button class="launcher" @click=${() => {
       this.#open = !this.#open;
       this.requestUpdate();
-    }} aria-label="打开抢课助手">选课助手</button>
-      ${this.#open ? b`<section class="panel" aria-label="抢课助手">
-        <header><div><h2>选课助手</h2><div class="muted">v4 · ${this.running ? "正在提交" : "准备就绪"}</div></div><button class=${this.running ? "danger" : "primary"} @click=${() => this.running ? this.onStop?.() : this.onStart?.()}>${this.running ? "停止" : "开始"}</button></header>
-        <div class="entry"><input id="codes" ?disabled=${this.running} placeholder="课程号 + 教学班序号，以空格分隔" @keydown=${(event) => event.key === "Enter" && this.#add()}><button ?disabled=${this.running} @click=${this.#add}>添加</button></div>
-        <details><summary class="muted">${this.settings?.mode.isCyclic ? "循环" : "单次"} · ${this.settings?.mode.isAsync ? "异步" : "同步"} · ${this.settings?.mode.isGrouped ? "每组 3 门" : "逐门"} · 设置</summary>
-          <div class="settings">
-            ${this.#toggle("循环提交", "isCyclic")} ${this.#toggle("异步发送", "isAsync")} ${this.#toggle("每组 3 门", "isGrouped")} ${this.#toggle("自动搜索", "enableSearch")}
-            <label>发送间隔（ms）<input type="number" min="100" max="5000" .value=${String(this.#interval())} @change=${this.#setInterval}></label>
-            <label>搜索页大小<input type="number" min="10" max="100" step="10" .value=${String(this.settings?.search.pageSize ?? 20)} @change=${this.#setPageSize}></label>
-            <label>搜索翻页延迟（ms）<input type="number" min="100" max="5000" step="100" .value=${String(this.settings?.search.pageDelay ?? 500)} @change=${this.#setPageDelay}></label>
-          </div>
-        </details>
-        ${this.courses.length ? this.courses.map((course) => b`<article class="course"><div><strong>${course.courseName}</strong><span>${course.teacherName} · ${course.key}</span></div><button class="remove" ?disabled=${this.running} @click=${() => this.onRemove?.(course.key)}>删除</button></article>`) : b`<div class="empty">还没有待提交课程</div>`}
-      </section>` : null}`;
+    }}>选课助手</button>${this.#open ? b`<section class="panel"><header><div><h2>选课助手</h2><span class="muted">测试版 · ${this.running ? "正在提交" : "准备就绪"}</span></div><button class=${this.running ? "danger" : "primary"} @click=${() => this.running ? this.onStop?.() : this.onStart?.()}>${this.running ? "停止" : "开始"}</button></header><div class="entry"><input id="codes" ?disabled=${this.running} placeholder="课程号 + 教学班序号，以空格分隔" @keydown=${(e2) => e2.key === "Enter" && this.#add()}><button ?disabled=${this.running} @click=${this.#add}>添加</button></div><button ?disabled=${this.running} @click=${() => this.#modal = "settings"}>设置</button>${this.courses.map((c2, i2) => b`<article class="course ${i2 === this.#selected ? "selected" : ""}" tabindex="0" draggable="true" @click=${() => {
+      this.#selected = i2;
+      this.requestUpdate();
+    }} @keydown=${(e2) => this.#key(e2, i2)} @dragstart=${() => this.#drag = i2} @dragover=${(e2) => e2.preventDefault()} @drop=${() => this.#move(this.#drag, i2)}><span class="handle">⠿</span><div><strong>${c2.courseName}</strong><span class="muted">${c2.teacherName} · ${c2.key}</span></div><span><button @click=${(e2) => {
+      e2.stopPropagation();
+      this.#detail = c2;
+      this.#modal = "detail";
+    }}>详情</button><button class="remove" @click=${(e2) => {
+      e2.stopPropagation();
+      this.onRemove?.(c2.key);
+    }}>删除</button></span></article>`)}</section>` : null}${this.#renderModal()}`;
+    }
+    #renderModal() {
+      if (!this.#modal) return null;
+      const close = () => this.#modal = null;
+      const modal = (title, body) => b`<div class="modal" @click=${close}><section class="dialog" @click=${(e2) => e2.stopPropagation()}><header><h2>${title}</h2><button @click=${close}>关闭</button></header>${body}</section></div>`;
+      if (this.#modal === "settings") return modal("选课设置", b`<label><input type="radio" name="cycle" .checked=${!this.settings.mode.isCyclic} @change=${() => this.#mode("isCyclic", false)}>单次</label><label><input type="radio" name="cycle" .checked=${this.settings.mode.isCyclic} @change=${() => this.#mode("isCyclic", true)}>循环</label><label><input type="radio" name="send" .checked=${!this.settings.mode.isAsync} @change=${() => this.#mode("isAsync", false)}>同步（等待响应）</label><label><input type="radio" name="send" .checked=${this.settings.mode.isAsync} @change=${() => this.#mode("isAsync", true)}>异步（按间隔继续发送）</label><label>每批课程数 <input type="number" min="1" max="3" .value=${String(this.settings.mode.batchSize)} @change=${this.#batch}></label><p class="muted">当前：${this.settings.mode.isAsync ? "异步" : "同步"} · 每批 ${this.settings.mode.batchSize} 门</p><button @click=${() => this.#modal = "interval"}>设置发送间隔…</button><button @click=${() => this.#modal = "search"}>搜索设置…</button>`);
+      if (this.#modal === "interval") return modal("发送间隔（ms）", b`<div class="grid">${["sync", "async"].map((m2) => b`<div><strong>${m2 === "sync" ? "同步" : "异步"}</strong>${[1, 2, 3].map((n3) => b`<label>${n3} 门<input type="number" min="0" .value=${String(this.settings.interval[m2].byBatch[n3])} @change=${(e2) => this.#interval(m2, n3, e2)}></label>`)}</div>`)}</div>`);
+      if (this.#modal === "search") return modal("搜索设置", b`<label><input type="checkbox" .checked=${this.settings.mode.enableSearch} @change=${(e2) => this.#mode("enableSearch", e2.target.checked)}>启用自动搜索</label><label>每页数量<input type="number" .value=${String(this.settings.search.pageSize)} @change=${(e2) => this.#search("pageSize", e2)}></label><label>翻页延迟（ms）<input type="number" .value=${String(this.settings.search.pageDelay)} @change=${(e2) => this.#search("pageDelay", e2)}></label>${this.settings.search.typeOrder.map((t2, i2) => b`<div class="order" draggable="true" @dragstart=${() => this.#drag = i2} @dragover=${(e2) => e2.preventDefault()} @drop=${() => this.#typeMove(this.#drag, i2)}>⠿ ${i2 + 1}. ${names[t2]}</div>`)}`);
+      if (this.#modal === "detail" && this.#detail) {
+        const c2 = this.#detail;
+        return modal("课程详情", b`<p>课程信息：${c2.courseName}</p><p>开课单位/教师：${c2.department ?? "待定"} ${c2.teacherName}</p><p>授课地点：${c2.location ?? "待定"}</p><p>课程属性：${c2.courseNature ?? "待定"} ${c2.courseCategory ?? ""}</p><p>选课人数：${c2.selectedCount ?? "待定"}/${c2.totalCapacity ?? "待定"}</p>`);
+      }
+      return modal("特别提醒（转）", b`<p>请各位同学秉持诚信原则参与选课，严禁使用脚本、代码等任何手段干扰、破坏选课秩序；学校将对选课数据进行后台异常监测。</p><label><input type="checkbox" checked @change=${() => this.#announce()}>不再弹出</label><button class="primary" @click=${close}>我知道了</button>`);
+    }
+    firstUpdated() {
+      if (!this.settings?.announcement.hasRead) this.#modal = "announcement";
     }
     #add() {
-      const input = this.renderRoot.querySelector("#codes");
-      if (!input?.value.trim()) return;
-      this.onAdd?.(input.value);
-      input.value = "";
+      const i2 = this.renderRoot.querySelector("#codes");
+      if (i2?.value.trim()) {
+        this.onAdd?.(i2.value);
+        i2.value = "";
+      }
     }
-    #toggle(label, key2) {
-      return b`<label><input type="checkbox" .checked=${Boolean(this.settings?.mode[key2])} @change=${(event) => this.#setMode(key2, event.target.checked)}>${label}</label>`;
+    #mode(k2, v2) {
+      this.onSettingsChange?.({ ...this.settings, mode: { ...this.settings.mode, [k2]: v2 } });
     }
-    #setMode(key2, value) {
-      this.onSettingsChange?.({ ...this.settings, mode: { ...this.settings.mode, [key2]: value } });
-    }
-    #interval() {
-      const mode = this.settings?.mode.isAsync ? "async" : "sync";
-      const type = this.settings?.mode.isGrouped ? "group" : "single";
-      return this.settings?.interval[mode][type] ?? 300;
-    }
-    #setInterval = (event) => {
-      const value = Number(event.target.value);
-      if (!Number.isFinite(value)) return;
-      const mode = this.settings.mode.isAsync ? "async" : "sync";
-      const type = this.settings.mode.isGrouped ? "group" : "single";
-      this.onSettingsChange?.({ ...this.settings, interval: { ...this.settings.interval, [mode]: { ...this.settings.interval[mode], [type]: value } } });
+    #batch = (e2) => {
+      const n3 = Math.max(1, Math.min(3, Number(e2.target.value) || 1));
+      this.onSettingsChange?.({ ...this.settings, mode: { ...this.settings.mode, batchSize: n3, isGrouped: n3 > 1 } });
     };
-    #setPageSize = (event) => this.onSettingsChange?.({ ...this.settings, search: { ...this.settings.search, pageSize: Number(event.target.value) } });
-    #setPageDelay = (event) => this.onSettingsChange?.({ ...this.settings, search: { ...this.settings.search, pageDelay: Number(event.target.value) } });
+    #interval(m2, n3, e2) {
+      const v2 = Math.max(0, Number(e2.target.value) || 0), x2 = { ...this.settings.interval[m2], byBatch: { ...this.settings.interval[m2].byBatch, [n3]: v2 } };
+      this.onSettingsChange?.({ ...this.settings, interval: { ...this.settings.interval, [m2]: x2 } });
+    }
+    #search(k2, e2) {
+      this.onSettingsChange?.({ ...this.settings, search: { ...this.settings.search, [k2]: Number(e2.target.value) } });
+    }
+    #move(f2, t2) {
+      if (f2 >= 0 && f2 !== t2) this.onReorder?.(f2, t2);
+    }
+    #key(e2, i2) {
+      if (e2.key === "ArrowUp") {
+        e2.preventDefault();
+        this.#move(i2, i2 - 1);
+      }
+      if (e2.key === "ArrowDown") {
+        e2.preventDefault();
+        this.#move(i2, i2 + 1);
+      }
+    }
+    #typeMove(f2, t2) {
+      const a2 = [...this.settings.search.typeOrder];
+      const [x2] = a2.splice(f2, 1);
+      a2.splice(t2, 0, x2);
+      this.onSettingsChange?.({ ...this.settings, search: { ...this.settings.search, typeOrder: a2 } });
+    }
+    #announce() {
+      this.onSettingsChange?.({ ...this.settings, announcement: { hasRead: true } });
+    }
   }
   customElements.define("seu-grab-lessons-app", GrabLessonsApp);
-  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const delay$1 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   class EnrollmentRunner {
     #controller = null;
     #inFlight = new Set();
@@ -588,18 +618,18 @@
       if (this.running) await this.stop();
       const controller = new AbortController();
       this.#controller = controller;
-      const interval = options.settings.interval[options.settings.mode.isAsync ? "async" : "sync"][options.settings.mode.isGrouped ? "group" : "single"];
+      const interval = options.settings.interval[options.settings.mode.isAsync ? "async" : "sync"].byBatch[options.settings.mode.batchSize];
       try {
         do {
           const snapshot = options.getCourses();
           if (!snapshot.length) break;
-          const size = options.settings.mode.isGrouped ? 3 : 1;
+          const size = options.settings.mode.batchSize;
           for (let offset = 0; offset < snapshot.length && !controller.signal.aborted; offset += size) {
             const group = snapshot.slice(offset, offset + size);
-            const tasks = group.map((course) => this.#submit(course, options, controller.signal));
+            const tasks = group.map((course2) => this.#submit(course2, options, controller.signal));
             if (options.settings.mode.isAsync) tasks.forEach((task) => void task);
             else await Promise.all(tasks);
-            if (!controller.signal.aborted) await delay(interval);
+            if (!controller.signal.aborted) await delay$1(interval);
           }
           if (options.settings.mode.isAsync) await Promise.allSettled([...this.#inFlight]);
         } while (options.settings.mode.isCyclic && !controller.signal.aborted && options.getCourses().length > 0);
@@ -612,14 +642,14 @@
       await Promise.allSettled([...this.#inFlight]);
       this.#controller = null;
     }
-    #submit(course, options, signal) {
+    #submit(course2, options, signal) {
       const task = (async () => {
         try {
-          const result = await options.api.addCourse(course, signal);
-          options.notify(result.ok ? "success" : "warning", `${course.teacherName} 的 ${course.courseName}：${result.message}`);
-          if (result.ok) options.remove(course.key);
+          const result = await options.api.addCourse(course2, signal);
+          options.notify(result.ok ? "success" : "warning", `${course2.teacherName} 的 ${course2.courseName}：${result.message}`);
+          if (result.ok) options.remove(course2.key);
         } catch (error) {
-          if (!signal.aborted) options.notify("error", `${course.courseName} 请求失败：${error instanceof Error ? error.message : "未知错误"}`);
+          if (!signal.aborted) options.notify("error", `${course2.courseName} 请求失败：${error instanceof Error ? error.message : "未知错误"}`);
         }
       })();
       this.#inFlight.add(task);
@@ -628,10 +658,10 @@
     }
   }
   class SeuApi {
-    async addCourse(course, signal) {
+    async addCourse(course2, signal) {
       const submit = async (isConfirm = false) => {
-        const body = new URLSearchParams({ clazzType: course.courseType, clazzId: course.classId, secretVal: course.secretVal, ...isConfirm ? { isConfirm: "1" } : {} });
-        const response = await fetch("/elective/clazz/add", { method: "POST", signal, headers: { batchId: course.batchId, "content-type": "application/x-www-form-urlencoded" }, body });
+        const body = new URLSearchParams({ clazzType: course2.courseType, clazzId: course2.classId, secretVal: course2.secretVal, ...isConfirm ? { isConfirm: "1" } : {} });
+        const response = await fetch("/elective/clazz/add", { method: "POST", signal, headers: { batchId: course2.batchId, "content-type": "application/x-www-form-urlencoded" }, body });
         return response.json();
       };
       const first = await submit();
@@ -649,45 +679,43 @@
       return { rows: payload.data.rows ?? [], total: payload.data.total ?? 0 };
     }
   }
-  const defaultSettings = {
-    schemaVersion: 1,
-    mode: { isAsync: false, isCyclic: true, isGrouped: false, enableSearch: true },
-    interval: { sync: { single: 300, group: 1e3 }, async: { single: 350, group: 1e3 } },
-    search: { pageSize: 20, pageDelay: 500 },
-    announcement: { hasRead: false }
-  };
-  const key = "grab-lessons-for-seu:v4";
-  const cloneDefaults = () => structuredClone(defaultSettings);
-  function isRecord(value) {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
+  const defaultTypeOrder = ["TJKC", "FANKC", "FAWKC", "TYKC", "XGKC"];
+  const defaultSettings = { schemaVersion: 2, token: "", savedCourseCodes: "", mode: { isAsync: false, isCyclic: true, isGrouped: false, batchSize: 1, enableSearch: true, cycleCount: -1 }, interval: { sync: { single: 300, group: 1e3, byBatch: { 1: 300, 2: 1e3, 3: 1e3 } }, async: { single: 350, group: 1e3, byBatch: { 1: 350, 2: 1e3, 3: 1e3 } } }, search: { pageSize: 20, pageDelay: 500, typeOrder: defaultTypeOrder }, announcement: { hasRead: false } };
+  const isRecord = (v2) => typeof v2 === "object" && v2 !== null && !Array.isArray(v2);
+  const num = (v2, d2) => typeof v2 === "number" && Number.isFinite(v2) ? v2 : d2;
+  const clone = () => structuredClone(defaultSettings);
+  function course(key, v2) {
+    if (!isRecord(v2) || typeof v2.classID !== "string" || typeof v2.courseBatch !== "string" || typeof v2.courseType !== "string" || typeof v2.secretVal !== "string") return null;
+    return { key, batchId: v2.courseBatch, classId: v2.classID, courseType: v2.courseType, secretVal: v2.secretVal, courseName: String(v2.courseName ?? key), teacherName: String(v2.teacherName ?? "待定"), department: typeof v2.department === "string" ? v2.department : void 0, location: typeof v2.location === "string" ? v2.location : void 0, courseNature: typeof v2.courseNature === "string" ? v2.courseNature : void 0, courseCategory: typeof v2.courseCategory === "string" ? v2.courseCategory : void 0, selectedCount: num(v2.selectedCount, 0), totalCapacity: num(v2.totalCapacity, 0) };
   }
   function loadState() {
     try {
-      const raw = JSON.parse(localStorage.getItem(key) ?? localStorage.getItem("july") ?? "null");
-      if (!isRecord(raw)) return { settings: cloneDefaults(), courses: {} };
-      const settings = isRecord(raw.settings) ? raw.settings : {};
-      const oldCourses = isRecord(raw.enrollDict) ? raw.enrollDict : {};
-      const courses = isRecord(raw.courses) ? raw.courses : Object.fromEntries(Object.entries(oldCourses).flatMap(([courseKey, value]) => {
-        if (!isRecord(value) || typeof value.classID !== "string" || typeof value.courseBatch !== "string" || typeof value.courseType !== "string" || typeof value.secretVal !== "string") return [];
-        return [[courseKey, { key: courseKey, batchId: value.courseBatch, classId: value.classID, courseType: value.courseType, secretVal: value.secretVal, courseName: String(value.courseName ?? courseKey), teacherName: String(value.teacherName ?? "待定"), department: typeof value.department === "string" ? value.department : void 0, location: typeof value.location === "string" ? value.location : void 0 }]];
-      }));
-      return {
-        settings: {
-          ...cloneDefaults(),
-          schemaVersion: 1,
-          mode: { ...cloneDefaults().mode, ...isRecord(settings.mode) ? settings.mode : {} },
-          interval: { ...cloneDefaults().interval, ...isRecord(settings.interval) ? settings.interval : {} },
-          search: { ...cloneDefaults().search, ...isRecord(settings.search) ? settings.search : {} },
-          announcement: { ...cloneDefaults().announcement, ...isRecord(settings.announcement) ? settings.announcement : {} }
-        },
-        courses
+      const raw = JSON.parse(localStorage.getItem("july") ?? "null");
+      if (!isRecord(raw)) return { settings: clone(), courses: {}, courseOrder: [] };
+      const old = isRecord(raw.settings) ? raw.settings : {}, mode = isRecord(old.mode) ? old.mode : {}, search = isRecord(old.search) ? old.search : {}, ints = isRecord(old.interval) ? old.interval : {};
+      const batch = [1, 2, 3].includes(mode.batchSize) ? mode.batchSize : mode.isGrouped ? 3 : 1;
+      const getInt = (name) => {
+        const x2 = isRecord(ints[name]) ? ints[name] : {}, base = clone().interval[name], b2 = isRecord(x2.byBatch) ? x2.byBatch : {};
+        const single = num(x2.single, base.single), group = num(x2.group, base.group);
+        return { single, group, byBatch: { 1: num(b2[1], single), 2: num(b2[2], group), 3: num(b2[3], group) } };
       };
+      const order = Array.isArray(search.typeOrder) && search.typeOrder.length === 5 ? search.typeOrder : defaultTypeOrder;
+      const settings = { schemaVersion: 2, token: typeof old.token === "string" ? old.token : "", savedCourseCodes: typeof old.savedCourseCodes === "string" ? old.savedCourseCodes : "", mode: { ...clone().mode, ...mode, batchSize: batch, isGrouped: batch > 1 }, interval: { sync: getInt("sync"), async: getInt("async") }, search: { pageSize: num(search.pageSize, 20), pageDelay: num(search.pageDelay, 500), typeOrder: order }, announcement: { hasRead: Boolean(isRecord(old.announcement) && old.announcement.hasRead) } };
+      const source = isRecord(raw.enrollDict) ? raw.enrollDict : {};
+      const courses = Object.fromEntries(Object.entries(source).flatMap(([k2, v2]) => {
+        const c2 = course(k2, v2);
+        return c2 ? [[k2, c2]] : [];
+      }));
+      const saved = Array.isArray(raw.courseOrder) ? raw.courseOrder.filter((x2) => typeof x2 === "string" && x2 in courses) : [];
+      return { settings, courses, courseOrder: [...saved, ...Object.keys(courses).filter((k2) => !saved.includes(k2))] };
     } catch {
-      return { settings: cloneDefaults(), courses: {} };
+      return { settings: clone(), courses: {}, courseOrder: [] };
     }
   }
   function saveState(state) {
-    localStorage.setItem(key, JSON.stringify(state));
+    const enrollDict = Object.fromEntries(Object.entries(state.courses).map(([k2, c2]) => [k2, { courseBatch: c2.batchId, classID: c2.classId, courseType: c2.courseType, secretVal: c2.secretVal, courseName: c2.courseName, teacherName: c2.teacherName, department: c2.department, location: c2.location, courseNature: c2.courseNature, courseCategory: c2.courseCategory, selectedCount: c2.selectedCount, totalCapacity: c2.totalCapacity }]));
+    const s2 = state.settings;
+    localStorage.setItem("july", JSON.stringify({ enrollDict, courseOrder: state.courseOrder, settings: { ...s2, mode: { ...s2.mode, isGrouped: s2.mode.batchSize > 1 }, interval: { sync: { ...s2.interval.sync, single: s2.interval.sync.byBatch[1], group: s2.interval.sync.byBatch[3] }, async: { ...s2.interval.async, single: s2.interval.async.byBatch[1], group: s2.interval.async.byBatch[3] } } } }));
   }
   function installCourseAddButtons(onAdd) {
     const scan = () => {
@@ -718,108 +746,111 @@
     if (normalized.length <= 8) return null;
     const courseCode = normalized.slice(0, 8);
     const sequence = normalized.slice(8);
-    const course = courses.find((item) => item.KCH === courseCode);
-    if (!course) return null;
-    if (type === "XGKC" && course.KXH !== sequence) return null;
-    const teacher = type === "XGKC" ? course : course.tcList?.find((item) => item.KXH === sequence);
+    const course2 = courses.find((item) => item.KCH === courseCode);
+    if (!course2) return null;
+    if (type === "XGKC" && course2.KXH !== sequence) return null;
+    const teacher = type === "XGKC" ? course2 : course2.tcList?.find((item) => item.KXH === sequence);
     if (!teacher || !("JXBID" in teacher) || !teacher.JXBID || !("secretVal" in teacher) || !teacher.secretVal) return null;
-    return { key: normalized, batchId, classId: teacher.JXBID, courseType: type, secretVal: teacher.secretVal, courseName: course.KCM, teacherName: teacher.SKJS || "待定", department: teacher.KKDW, location: teacher.YPSJDD, selectedCount: teacher.numberOfSelected, totalCapacity: teacher.classCapacity };
+    return { key: normalized, batchId, classId: teacher.JXBID, courseType: type, secretVal: teacher.secretVal, courseName: course2.KCM, teacherName: teacher.SKJS || "待定", department: teacher.KKDW, location: teacher.YPSJDD, courseNature: teacher.KCXZ, courseCategory: teacher.KCLB, selectedCount: teacher.numberOfSelected, totalCapacity: teacher.classCapacity };
   }
-  const waitForPage = async () => {
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const page = window.grablessonsVue;
-      if (page && document.querySelector("#xsxkapp")) return page;
-      await new Promise((resolve) => setTimeout(resolve, 100));
+  const delay = (ms) => new Promise((r2) => setTimeout(r2, ms));
+  const codes = (x2) => x2.split(/\s+/).map((v2) => v2.trim().toUpperCase()).filter((v2) => v2.length > 8);
+  const notify = (p2, t2, m2) => p2.$message({ type: t2, message: m2, duration: 1800 });
+  async function page() {
+    for (let i2 = 0; i2 < 100; i2++) {
+      if (window.grablessonsVue && document.querySelector("#xsxkapp")) return window.grablessonsVue;
+      await delay(100);
     }
-    throw new Error("选课页面未能在 10 秒内完成初始化");
-  };
-  const notify = (page, type, message) => page.$message({ type, message, duration: 1800 });
+    throw Error("选课页面未能在 10 秒内完成初始化");
+  }
   async function main() {
-    const page = await waitForPage();
-    const state = loadState();
-    const api = new SeuApi();
-    const runner = new EnrollmentRunner();
-    const app = document.createElement("seu-grab-lessons-app");
-    const root = document.querySelector("#xsxkapp") ?? document.body;
-    root.append(app);
+    const p2 = await page(), state = loadState(), api = new SeuApi(), runner = new EnrollmentRunner(), now = sessionStorage.getItem("token") ?? "", app = document.createElement("seu-grab-lessons-app");
+    (document.querySelector("#xsxkapp") ?? document.body).append(app);
+    const persist = () => saveState(state);
+    const list = () => state.courseOrder.map((k2) => state.courses[k2]).filter((c2) => Boolean(c2) && c2.batchId === p2.lcParam.currentBatch.code);
     const render = () => {
-      app.courses = Object.values(state.courses).filter((course) => course.batchId === page.lcParam.currentBatch.code);
+      app.courses = list();
       app.settings = state.settings;
       app.running = runner.running;
       app.requestUpdate();
     };
-    const persist = () => saveState(state);
-    app.onRemove = (key2) => {
-      delete state.courses[key2];
-      persist();
-      render();
+    const put = (c2) => {
+      if (!state.courses[c2.key]) state.courseOrder.push(c2.key);
+      state.courses[c2.key] = c2;
     };
-    app.onSettingsChange = (settings) => {
-      state.settings = settings;
-      persist();
-      render();
-    };
-    const addCodes = async (input) => {
-      if (runner.running) {
-        notify(page, "warning", "抢课进行中，暂不能修改课程列表");
-        return;
-      }
-      const failed = [];
-      for (const code of input.split(/\s+/)) {
-        const selection = selectionFrom(code, page.courseList, page.teachingClassType, page.lcParam.currentBatch.code);
-        if (selection) state.courses[selection.key] = selection;
-        else failed.push(code);
-      }
-      if (failed.length && state.settings.mode.enableSearch) {
-        const remaining = new Set(failed);
-        const controller = new AbortController();
-        const types = ["TJKC", "FANKC", "FAWKC", "TYKC", "XGKC"];
-        for (const type of types) {
-          for (let pageNumber = 1; remaining.size; pageNumber += 1) {
-            try {
-              await new Promise((resolve) => setTimeout(resolve, state.settings.search.pageDelay));
-              const result = await api.search(type, pageNumber, state.settings.search.pageSize, page.currentCampus.code, controller.signal);
-              for (const code of [...remaining]) {
-                const selection = selectionFrom(code, result.rows, type, page.lcParam.currentBatch.code);
-                if (selection) {
-                  state.courses[selection.key] = selection;
-                  remaining.delete(code);
-                }
-              }
-              notify(page, "success", `已搜索 ${type} 第 ${pageNumber} 页，剩余 ${remaining.size} 门`);
-              if (!result.rows.length || pageNumber * state.settings.search.pageSize >= result.total) break;
-            } catch (error) {
-              notify(page, "warning", `搜索 ${type} 失败：${error instanceof Error ? error.message : "未知错误"}`);
-              break;
+    const search = async (input) => {
+      const left = new Set(codes(input));
+      if (!state.settings.mode.enableSearch) return [...left];
+      for (const type of state.settings.search.typeOrder) for (let n3 = 1; left.size; n3++) {
+        try {
+          await delay(state.settings.search.pageDelay);
+          const r2 = await api.search(type, n3, state.settings.search.pageSize, p2.currentCampus.code, new AbortController().signal);
+          for (const code of [...left]) {
+            const c2 = selectionFrom(code, r2.rows, type, p2.lcParam.currentBatch.code);
+            if (c2) {
+              put(c2);
+              left.delete(code);
             }
           }
+          notify(p2, "success", `已搜索 ${type} 第 ${n3} 页，剩余 ${left.size} 门`);
+          if (!r2.rows.length || n3 * state.settings.search.pageSize >= r2.total) break;
+        } catch (e2) {
+          notify(p2, "warning", `搜索 ${type} 失败`);
+          break;
         }
-        failed.splice(0, failed.length, ...remaining);
       }
-      persist();
-      render();
-      notify(page, failed.length ? "warning" : "success", failed.length ? `未找到：${failed.join(" ")}` : "课程已加入列表");
+      return [...left];
     };
+    if (state.settings.token !== now && Object.keys(state.courses).length) {
+      const pending = [...state.courseOrder, ...codes(state.settings.savedCourseCodes)].filter((x2, i2, a2) => a2.indexOf(x2) === i2);
+      state.courses = {};
+      state.courseOrder = [];
+      notify(p2, "warning", "登录状态变化，正在重新获取课程凭据");
+      state.settings.savedCourseCodes = (await search(pending.join(" "))).join(" ");
+    }
+    state.settings.token = now;
+    persist();
     app.onAdd = (input) => {
-      void addCodes(input);
-    };
-    installCourseAddButtons((code) => {
-      void addCodes(code);
-    });
-    app.onStart = () => {
-      void runner.start({ api, settings: state.settings, getCourses: () => Object.values(state.courses).filter((course) => course.batchId === page.lcParam.currentBatch.code), remove: (key2) => {
-        delete state.courses[key2];
+      void (async () => {
+        const failed = [];
+        for (const code of codes(input)) {
+          const c2 = selectionFrom(code, p2.courseList, p2.teachingClassType, p2.lcParam.currentBatch.code);
+          if (c2) put(c2);
+          else failed.push(code);
+        }
+        state.settings.savedCourseCodes = (await search(failed.join(" "))).join(" ");
         persist();
         render();
-      }, notify: (type, message) => notify(page, type, message) }).finally(render);
+      })();
+    };
+    app.onRemove = (k2) => {
+      delete state.courses[k2];
+      state.courseOrder = state.courseOrder.filter((x2) => x2 !== k2);
+      persist();
+      render();
+    };
+    app.onReorder = (from, to) => {
+      const [x2] = state.courseOrder.splice(from, 1);
+      state.courseOrder.splice(to, 0, x2);
+      persist();
+      render();
+    };
+    app.onSettingsChange = (s2) => {
+      state.settings = s2;
+      persist();
+      render();
+    };
+    app.onStart = () => {
+      void runner.start({ api, settings: state.settings, getCourses: list, remove: (k2) => app.onRemove?.(k2), notify: (t2, m2) => notify(p2, t2, m2) }).finally(render);
       render();
     };
     app.onStop = () => {
       void runner.stop().finally(render);
       render();
     };
+    installCourseAddButtons((code) => app.onAdd?.(code));
     render();
   }
-  void main().catch((error) => console.error("[grab-lessons-for-seu]", error));
+  void main().catch((e2) => console.error("[grab-lessons-for-seu]", e2));
 
 })();

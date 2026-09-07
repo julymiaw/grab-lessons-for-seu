@@ -12,7 +12,7 @@ export default defineConfig({
       userscript: {
         name: "东南大学选课助手（测试版）",
         namespace: "https://github.com/julymiaw/grab-lessons-for-seu",
-        version: "4.0.0",
+        version: "4.0.1",
         description: "实验性重构版本，尚未经真实选课系统验证",
         author: "july",
         license: "MIT",

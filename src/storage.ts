@@ -1,36 +1,6 @@
-import { defaultSettings, type Settings, type StoredState } from "./types";
-
-const key = "grab-lessons-for-seu:v4";
-const cloneDefaults = (): Settings => structuredClone(defaultSettings);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-export function loadState(): StoredState {
-  try {
-    const raw: unknown = JSON.parse(localStorage.getItem(key) ?? localStorage.getItem("july") ?? "null");
-    if (!isRecord(raw)) return { settings: cloneDefaults(), courses: {} };
-    const settings = isRecord(raw.settings) ? raw.settings : {};
-    const oldCourses = isRecord(raw.enrollDict) ? raw.enrollDict : {};
-    const courses = isRecord(raw.courses) ? raw.courses : Object.fromEntries(Object.entries(oldCourses).flatMap(([courseKey, value]) => {
-      if (!isRecord(value) || typeof value.classID !== "string" || typeof value.courseBatch !== "string" || typeof value.courseType !== "string" || typeof value.secretVal !== "string") return [];
-      return [[courseKey, { key: courseKey, batchId: value.courseBatch, classId: value.classID, courseType: value.courseType, secretVal: value.secretVal, courseName: String(value.courseName ?? courseKey), teacherName: String(value.teacherName ?? "待定"), department: typeof value.department === "string" ? value.department : undefined, location: typeof value.location === "string" ? value.location : undefined }]];
-    }));
-    return {
-      settings: {
-        ...cloneDefaults(),
-        schemaVersion: 1,
-        mode: { ...cloneDefaults().mode, ...(isRecord(settings.mode) ? settings.mode : {}) },
-        interval: { ...cloneDefaults().interval, ...(isRecord(settings.interval) ? settings.interval : {}) },
-        search: { ...cloneDefaults().search, ...(isRecord(settings.search) ? settings.search : {}) },
-        announcement: { ...cloneDefaults().announcement, ...(isRecord(settings.announcement) ? settings.announcement : {}) }
-      } as Settings,
-      courses: courses as StoredState["courses"]
-    };
-  } catch {
-    return { settings: cloneDefaults(), courses: {} };
-  }
-}
-
-export function saveState(state: StoredState): void { localStorage.setItem(key, JSON.stringify(state)); }
+import { defaultSettings, defaultTypeOrder, type CourseSelection, type CourseType, type Settings, type StoredState } from "./types";
+const isRecord=(v:unknown):v is Record<string,unknown>=>typeof v==="object"&&v!==null&&!Array.isArray(v); const num=(v:unknown,d:number)=>typeof v==="number"&&Number.isFinite(v)?v:d;
+const clone=()=>structuredClone(defaultSettings);
+function course(key:string,v:unknown):CourseSelection|null { if(!isRecord(v)||typeof v.classID!=="string"||typeof v.courseBatch!=="string"||typeof v.courseType!=="string"||typeof v.secretVal!=="string")return null; return {key,batchId:v.courseBatch,classId:v.classID,courseType:v.courseType as CourseType,secretVal:v.secretVal,courseName:String(v.courseName??key),teacherName:String(v.teacherName??"待定"),department:typeof v.department==="string"?v.department:undefined,location:typeof v.location==="string"?v.location:undefined,courseNature:typeof v.courseNature==="string"?v.courseNature:undefined,courseCategory:typeof v.courseCategory==="string"?v.courseCategory:undefined,selectedCount:num(v.selectedCount,0),totalCapacity:num(v.totalCapacity,0)}; }
+export function loadState():StoredState { try { const raw=JSON.parse(localStorage.getItem("july")??"null"); if(!isRecord(raw))return{settings:clone(),courses:{},courseOrder:[]}; const old=isRecord(raw.settings)?raw.settings:{},mode=isRecord(old.mode)?old.mode:{},search=isRecord(old.search)?old.search:{},ints=isRecord(old.interval)?old.interval:{}; const batch=([1,2,3].includes(mode.batchSize as number)?mode.batchSize:mode.isGrouped?3:1) as 1|2|3; const getInt=(name:"sync"|"async")=>{const x=isRecord(ints[name])?ints[name]:{},base=clone().interval[name],b=isRecord(x.byBatch)?x.byBatch:{};const single=num(x.single,base.single),group=num(x.group,base.group);return{single,group,byBatch:{1:num(b[1],single),2:num(b[2],group),3:num(b[3],group)}}}; const order=Array.isArray(search.typeOrder)&&search.typeOrder.length===5?search.typeOrder as CourseType[]:defaultTypeOrder; const settings:Settings={schemaVersion:2,token:typeof old.token==="string"?old.token:"",savedCourseCodes:typeof old.savedCourseCodes==="string"?old.savedCourseCodes:"",mode:{...clone().mode,...mode,batchSize:batch,isGrouped:batch>1},interval:{sync:getInt("sync"),async:getInt("async")},search:{pageSize:num(search.pageSize,20),pageDelay:num(search.pageDelay,500),typeOrder:order},announcement:{hasRead:Boolean(isRecord(old.announcement)&&old.announcement.hasRead)}}; const source=isRecord(raw.enrollDict)?raw.enrollDict:{}; const courses=Object.fromEntries(Object.entries(source).flatMap(([k,v])=>{const c=course(k,v);return c?[[k,c]]:[]})); const saved=Array.isArray(raw.courseOrder)?raw.courseOrder.filter((x):x is string=>typeof x==="string"&&x in courses):[]; return{settings,courses,courseOrder:[...saved,...Object.keys(courses).filter(k=>!saved.includes(k))]}; }catch{return{settings:clone(),courses:{},courseOrder:[]}} }
+export function saveState(state:StoredState){const enrollDict=Object.fromEntries(Object.entries(state.courses).map(([k,c])=>[k,{courseBatch:c.batchId,classID:c.classId,courseType:c.courseType,secretVal:c.secretVal,courseName:c.courseName,teacherName:c.teacherName,department:c.department,location:c.location,courseNature:c.courseNature,courseCategory:c.courseCategory,selectedCount:c.selectedCount,totalCapacity:c.totalCapacity}]));const s=state.settings;localStorage.setItem("july",JSON.stringify({enrollDict,courseOrder:state.courseOrder,settings:{...s,mode:{...s.mode,isGrouped:s.mode.batchSize>1},interval:{sync:{...s.interval.sync,single:s.interval.sync.byBatch[1],group:s.interval.sync.byBatch[3]},async:{...s.interval.async,single:s.interval.async.byBatch[1],group:s.interval.async.byBatch[3]}}}}));}

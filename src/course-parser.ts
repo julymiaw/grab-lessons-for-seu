@@ -10,5 +10,5 @@ export function selectionFrom(code: string, courses: SeuCourse[], type: CourseTy
   if (type === "XGKC" && course.KXH !== sequence) return null;
   const teacher = type === "XGKC" ? course as SeuCourse : course.tcList?.find((item) => item.KXH === sequence);
   if (!teacher || !("JXBID" in teacher) || !teacher.JXBID || !("secretVal" in teacher) || !teacher.secretVal) return null;
-  return { key: normalized, batchId, classId: teacher.JXBID, courseType: type, secretVal: teacher.secretVal, courseName: course.KCM, teacherName: teacher.SKJS || "待定", department: teacher.KKDW, location: teacher.YPSJDD, selectedCount: teacher.numberOfSelected, totalCapacity: teacher.classCapacity };
+  return { key: normalized, batchId, classId: teacher.JXBID, courseType: type, secretVal: teacher.secretVal, courseName: course.KCM, teacherName: teacher.SKJS || "待定", department: teacher.KKDW, location: teacher.YPSJDD, courseNature: teacher.KCXZ, courseCategory: teacher.KCLB, selectedCount: teacher.numberOfSelected, totalCapacity: teacher.classCapacity };
 }

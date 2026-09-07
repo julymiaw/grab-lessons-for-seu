@@ -1,37 +1,10 @@
 export type CourseType = "TJKC" | "FANKC" | "FAWKC" | "TYKC" | "XGKC";
-
-export interface CourseSelection {
-  key: string;
-  batchId: string;
-  classId: string;
-  courseType: CourseType;
-  secretVal: string;
-  courseName: string;
-  teacherName: string;
-  department?: string;
-  location?: string;
-  selectedCount?: number;
-  totalCapacity?: number;
-}
-
-export interface Settings {
-  schemaVersion: 1;
-  mode: { isAsync: boolean; isCyclic: boolean; isGrouped: boolean; enableSearch: boolean };
-  interval: { sync: { single: number; group: number }; async: { single: number; group: number } };
-  search: { pageSize: number; pageDelay: number };
-  announcement: { hasRead: boolean };
-}
-
-export const defaultSettings: Settings = {
-  schemaVersion: 1,
-  mode: { isAsync: false, isCyclic: true, isGrouped: false, enableSearch: true },
-  interval: { sync: { single: 300, group: 1000 }, async: { single: 350, group: 1000 } },
-  search: { pageSize: 20, pageDelay: 500 },
-  announcement: { hasRead: false }
-};
-
-export interface StoredState { settings: Settings; courses: Record<string, CourseSelection> }
-
-export interface SeuTeacher { JXBID: string; KXH: string; secretVal: string; SKJS: string; KKDW?: string; YPSJDD?: string; numberOfSelected?: number; classCapacity?: number }
-export interface SeuCourse { KCH: string; KCM: string; tcList?: SeuTeacher[]; KXH?: string; JXBID?: string; secretVal?: string; SKJS?: string; KKDW?: string; YPSJDD?: string; numberOfSelected?: number; classCapacity?: number }
-export interface SeuPage { lcParam: { currentBatch: { code: string } }; teachingClassType: CourseType; courseList: SeuCourse[]; currentCampus: { code: string }; $message: (options: { type: string; message: string; duration?: number }) => void }
+export const defaultTypeOrder: CourseType[] = ["TJKC", "FANKC", "FAWKC", "TYKC", "XGKC"];
+export type CourseSelection = { key:string; batchId:string; classId:string; courseType:CourseType; secretVal:string; courseName:string; teacherName:string; department?:string; location?:string; courseNature?:string; courseCategory?:string; selectedCount?:number; totalCapacity?:number };
+export type IntervalMode = { single:number; group:number; byBatch: Record<1|2|3, number> };
+export type Settings = { schemaVersion:2; token:string; savedCourseCodes:string; mode:{isAsync:boolean;isCyclic:boolean;isGrouped:boolean;batchSize:1|2|3;enableSearch:boolean;cycleCount:number}; interval:{sync:IntervalMode;async:IntervalMode}; search:{pageSize:number;pageDelay:number;typeOrder:CourseType[]}; announcement:{hasRead:boolean} };
+export const defaultSettings: Settings = { schemaVersion:2,token:"",savedCourseCodes:"",mode:{isAsync:false,isCyclic:true,isGrouped:false,batchSize:1,enableSearch:true,cycleCount:-1},interval:{sync:{single:300,group:1000,byBatch:{1:300,2:1000,3:1000}},async:{single:350,group:1000,byBatch:{1:350,2:1000,3:1000}}},search:{pageSize:20,pageDelay:500,typeOrder:defaultTypeOrder},announcement:{hasRead:false} };
+export type StoredState = { settings:Settings; courses:Record<string,CourseSelection>; courseOrder:string[] };
+export interface SeuTeacher { JXBID:string;KXH:string;secretVal:string;SKJS:string;KKDW?:string;YPSJDD?:string;KCXZ?:string;KCLB?:string;numberOfSelected?:number;classCapacity?:number }
+export interface SeuCourse { KCH:string;KCM:string;tcList?:SeuTeacher[];KXH?:string;JXBID?:string;secretVal?:string;SKJS?:string;KKDW?:string;YPSJDD?:string;KCXZ?:string;KCLB?:string;numberOfSelected?:number;classCapacity?:number }
+export interface SeuPage { lcParam:{currentBatch:{code:string}};teachingClassType:CourseType;courseList:SeuCourse[];currentCampus:{code:string};$message:(options:{type:string;message:string;duration?:number})=>void }

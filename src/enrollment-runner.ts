@@ -12,12 +12,12 @@ export class EnrollmentRunner {
     if (this.running) await this.stop();
     const controller = new AbortController();
     this.#controller = controller;
-    const interval = options.settings.interval[options.settings.mode.isAsync ? "async" : "sync"][options.settings.mode.isGrouped ? "group" : "single"];
+    const interval = options.settings.interval[options.settings.mode.isAsync ? "async" : "sync"].byBatch[options.settings.mode.batchSize];
     try {
       do {
         const snapshot = options.getCourses();
         if (!snapshot.length) break;
-        const size = options.settings.mode.isGrouped ? 3 : 1;
+        const size = options.settings.mode.batchSize;
         for (let offset = 0; offset < snapshot.length && !controller.signal.aborted; offset += size) {
           const group = snapshot.slice(offset, offset + size);
           const tasks = group.map((course) => this.#submit(course, options, controller.signal));
