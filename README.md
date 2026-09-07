@@ -1,4 +1,20 @@
-# 东南大学抢课脚本（最终版）
+# 东南大学抢课脚本
+
+> 维护状态：原单文件 JavaScript 版本仍是历史稳定版。`src/` 中的 v4 TypeScript 重构为实验版本，尚未在当前选课系统或研究生选课环境验证，**不要在正式选课时段直接使用**。
+
+## 开发版（v4）
+
+源码采用 TypeScript、Lit、Vite 与 Vitest；构建后仍只产生一个可由油猴安装的文件：`dist/grab-lessons-for-seu.user.js`。
+
+```bash
+npm install
+npm run build
+npm test
+```
+
+欢迎仍在使用该选课系统的同学通过 Issue 或 Pull Request 报告页面结构、接口和兼容性变化。请不要提交登录凭据、token、secretVal 或个人选课数据。
+
+## 历史版本功能简介
 
 ## 功能简介
 
