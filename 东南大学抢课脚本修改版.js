@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name        东南大学抢课助手修改版
+// @name        东南大学选课助手（稳定版）
 // @namespace   http://tampermonkey.net/
-// @version     3.4.0
-// @description 听说你抢不到课
+// @version     3.4.1
+// @description 历史稳定版本；当前系统兼容性请以说明为准
 // @author      july
 // @license     MIT
 // @match       newxk.urp.seu.edu.cn/xsxk/elective/grablessons?*
