@@ -1,3 +1,6 @@
 node_modules/
-dist/
+# The test-edition userscript is intentionally checked in: Greasy Fork reads
+# this standalone, reviewable artifact directly from GitHub.
+dist/*
+!dist/东南大学选课助手测试版.user.js
 coverage/
