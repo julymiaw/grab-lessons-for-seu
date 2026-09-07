@@ -11,7 +11,7 @@
 | v3.4.1 | [`东南大学抢课脚本修改版.js`](./东南大学抢课脚本修改版.js) | 历史稳定版 | 仅限原有系统和页面结构；Greasy Fork 当前发布版本 |
 | 测试版 | [`src/`](./src) 与 [`dist/东南大学选课助手测试版.user.js`](./dist/东南大学选课助手测试版.user.js) | 实验版 | TypeScript 重构、自动化测试与后续兼容性适配 |
 
-稳定版发布页：[Greasy Fork](https://greasyfork.org/zh-CN/scripts/482811)。测试版发布页将在首次发布后补充。稳定版只接受已验证的兼容性修复；测试版用于收集仍在使用选课系统的同学的反馈。
+稳定版发布页：[Greasy Fork](https://greasyfork.org/zh-CN/scripts/482811)。测试版发布页：[Greasy Fork](https://greasyfork.org/zh-CN/scripts/594721)。稳定版只接受已验证的兼容性修复；测试版用于收集仍在使用选课系统的同学的反馈。
 
 ## 历史稳定版（v3）功能
 
