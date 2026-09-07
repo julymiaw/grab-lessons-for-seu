@@ -69,7 +69,7 @@ npm run build
 npm test
 ```
 
-构建产物为 `dist/东南大学选课助手测试版.user.js`，即单个可安装的 userscript 文件。该文件会纳入 Git，作为 Greasy Fork 测试版的自动同步源；其余 `dist/` 输出仍不纳入 Git。
+构建产物为 `dist/东南大学选课助手测试版.user.js`，即单个可安装的 userscript 文件。该文件会纳入 Git，作为 Greasy Fork 测试版的发布用文件；其余 `dist/` 输出仍不纳入 Git。
 
 当前自动化测试覆盖课程解析、旧数据迁移、`301` 确认请求、失败恢复、异步分组调度和课程详情按钮注入。它们不能代替真实选课系统的兼容性验证。
 
