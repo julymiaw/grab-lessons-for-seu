@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name        东南大学选课助手（稳定版）
+// @name        东南大学选课助手
 // @namespace   http://tampermonkey.net/
 // @version     3.5.1
 // @description 批量添加课程，按间隔提交，跟踪队列最终结果

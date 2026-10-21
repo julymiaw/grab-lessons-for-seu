@@ -9,7 +9,7 @@ const ui = read('src/legacy-ui.js');
 const core = read('src/seu-core.js').split("if (typeof module !== 'undefined'")[0];
 const runtime = read('src/compat-runtime.js');
 let output = `// ==UserScript==
-// @name        东南大学选课助手（稳定版）
+// @name        东南大学选课助手
 // @namespace   http://tampermonkey.net/
 // @version     ${release}
 // @description 批量添加课程，按间隔提交，跟踪队列最终结果
