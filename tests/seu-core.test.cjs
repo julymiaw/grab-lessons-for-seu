@@ -209,3 +209,27 @@ test('异步任务异常会停止后续派发，并等待其他在途任务完�
   assert.equal(active, 0);
   assert.equal(calls.length, 3);
 });
+
+test('异步单个仍受在途数量上限约束，等待首门结束后才派发下一门', async t => {
+  const controller = new AbortController();
+  const courses = [sample(), { ...sample(), classID: 'class-b' }];
+  const calls = [], pauses = [];
+  let release;
+  const first = new Promise(resolve => { release = resolve; });
+  t.after(() => { controller.abort(); release(); });
+  const running = core.run({
+    getCourses: () => courses, signal: controller.signal,
+    mode: { isAsync: true, isGrouped: false, isCyclic: false }, interval: 1000,
+    sleep: async ms => { pauses.push(ms); },
+    send: async course => {
+      calls.push(course.classID);
+      if (course.classID === 'class-a') await first;
+    },
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(pauses, [1000]);
+  assert.deepEqual(calls, ['class-a']);
+  release();
+  await running;
+  assert.deepEqual(calls, ['class-a', 'class-b']);
+});
