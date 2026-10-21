@@ -1,6 +1,6 @@
+# 登录后的原始抓包仅供本地分析。
+*.har
+evidence/private/
+evidence/
 node_modules/
-# The test-edition userscript is intentionally checked in: Greasy Fork reads
-# this standalone, reviewable artifact directly from GitHub.
-dist/*
-!dist/东南大学选课助手测试版.user.js
-coverage/
+.cache/

@@ -1,66 +1,256 @@
 // ==UserScript==
 // @name        东南大学选课助手（稳定版）
 // @namespace   http://tampermonkey.net/
-// @version     3.4.1
-// @description 历史稳定版本；当前系统兼容性请以说明为准
-// @author      july
+// @version     3.5.0
+// @description 适配2026选课页面；保留原面板，等待队列最终结果，防止重复提交
+// @author      july, nada
 // @license     MIT
-// @match       newxk.urp.seu.edu.cn/xsxk/elective/grablessons?*
-// @run-at      document-loaded
-// @icon        https://s2.loli.net/2024/12/19/lngsEvZ8tfUdJzr.jpg
+// @match       https://newxk.urp.seu.edu.cn/xsxk/elective/grablessons*
+// @run-at      document-idle
+// @grant       none
 // ==/UserScript==
 
-(function () {
-  // 版本
-  let version = [3, 4, 0];
+(async function () {
+  'use strict';
+  // Pure protocol/state logic. The userscript build embeds this factory unchanged.
+function createSeuCore() {
+  const codeOf = value => String(value ?? '');
+  const terminal = state => ['success', 'failed', 'cancelled'].includes(state);
+  const keyOf = course => `${course.courseBatch}:${course.classID}`;
+  const pending = state => ['submitting', 'queued', 'unknown'].includes(state);
 
-  // 请求
-  let request = axios.create();
+  function groupSize(value) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? Math.max(1, Math.min(Number.MAX_SAFE_INTEGER, Math.trunc(parsed))) : 3;
+  }
 
-  // 提示
-  let tip = grablessonsVue.$message;
+  function intervalMs(value, grouped = false) {
+    const parsed = Number(value);
+    const minimum = grouped ? 1000 : 1;
+    return Number.isFinite(parsed) ? Math.max(minimum, Math.min(60000, Math.trunc(parsed))) : 1000;
+  }
 
-  let isRunning = false;
-  let shouldStop = false;
+  function parseCodes(value) {
+    return [...new Set(String(value || '').toUpperCase().split(/[\s,，;；]+/).filter(Boolean))];
+  }
 
-  // 所选课程
+  function findCourse(code, rows, type, batch) {
+    for (const course of rows || []) {
+      const classes = Array.isArray(course.tcList) ? course.tcList : [course];
+      for (const teacher of classes) {
+        if (`${course.KCH ?? teacher.KCH}${teacher.KXH ?? ''}`.toUpperCase() !== code) continue;
+        if (!teacher.JXBID || !teacher.secretVal) return null;
+        return {
+          courseBatch: String(batch), classID: String(teacher.JXBID), courseType: type,
+          secretVal: teacher.secretVal, courseName: course.KCM || teacher.KCM || code,
+          teacherName: teacher.SKJS || '', department: teacher.KKDW || course.KKDW || '',
+          location: teacher.YPSJDD || '', selectedCount: teacher.YXRS ?? teacher.numberOfSelected ?? '',
+          totalCapacity: teacher.KRL ?? teacher.classCapacity ?? '',
+          courseNature: teacher.KCXZ || course.KCXZ || '', courseCategory: teacher.KCLB || course.KCLB || '',
+          hasTest: codeOf(teacher.hasTest) === '1', hasBook: codeOf(teacher.hasBook) === '1',
+          selected: codeOf(teacher.SFYX) === '1', status: 'ready', message: '',
+        };
+      }
+    }
+    return null;
+  }
+
+  function containsClass(rows, classID) {
+    if (!Array.isArray(rows)) throw new Error('已选课程响应结构变化，请在官网核实结果');
+    return rows.some(row => String(row.JXBID ?? '') === String(classID) ||
+      (Array.isArray(row.tcList) && containsClass(row.tcList, classID)));
+  }
+
+  class Ledger {
+    constructor(onChange = () => {}) { this.records = new Map(); this.onChange = onChange; }
+    start(course) {
+      const key = keyOf(course);
+      const old = this.records.get(key);
+      if (old && pending(old.state)) return null;
+      const record = { course, state: 'submitting', message: '正在提交', listeners: new Set() };
+      this.records.set(key, record);
+      this.change(record, 'submitting', record.message);
+      return record;
+    }
+    restore(course) {
+      const record = { course, state: 'unknown', message: '上次提交结果待核实', listeners: new Set() };
+      this.records.set(keyOf(course), record);
+      return record;
+    }
+    change(record, state, message) {
+      // A WebSocket result can arrive before the HTTP acknowledgement.
+      if (terminal(record.state)) return;
+      record.state = state;
+      record.message = message || '';
+      this.onChange(record);
+      for (const fn of record.listeners) fn();
+    }
+    receive(packet, batch) {
+      if (!packet || packet.code == null || packet.data === 'heart' || codeOf(packet.data?.operationType) !== '1') return false;
+      const data = packet.data;
+      if (data.batchId != null && String(data.batchId) !== String(batch)) return false;
+      const record = this.records.get(`${batch}:${data.clazzId}`);
+      if (!record || !pending(record.state)) return false;
+      this.change(record, codeOf(packet.code) === '200' ? 'success' : 'failed', packet.msg || '服务器返回选课处理结果');
+      return true;
+    }
+    wait(record, timeoutMs, signal) {
+      if (terminal(record.state) || signal?.aborted) return Promise.resolve(record.state);
+      return new Promise(resolve => {
+        const done = () => {
+          clearTimeout(timer);
+          record.listeners.delete(check);
+          signal?.removeEventListener('abort', done);
+          resolve(record.state);
+        };
+        const check = () => { if (terminal(record.state)) done(); };
+        const timer = setTimeout(done, timeoutMs);
+        record.listeners.add(check);
+        signal?.addEventListener('abort', done, { once: true });
+        if (signal?.aborted) done();
+      });
+    }
+  }
+
+  async function attempt({ course, ledger, submit, confirm, verify, signal, timeoutMs = 20000 }) {
+    if (signal?.aborted) return 'cancelled';
+    const record = ledger.start(course);
+    if (!record) return 'unknown'; // Never replay an unresolved submission.
+    try {
+      let response = await submit({ clazzType: course.courseType, clazzId: course.classID, secretVal: course.secretVal });
+      if (terminal(record.state)) return record.state;
+      if (codeOf(response?.code) === '301') {
+        const confirmed = signal?.aborted ? false : await untilStopped(confirm(response.msg || '此课程需要再次确认'), signal);
+        if (!confirmed) {
+          ledger.change(record, 'cancelled', '已取消二次确认');
+          return record.state;
+        }
+        if (signal?.aborted) {
+          ledger.change(record, 'cancelled', '已停止');
+          return record.state;
+        }
+        response = await submit({ clazzType: course.courseType, clazzId: course.classID, secretVal: course.secretVal, isConfirm: 1 });
+      }
+      if (terminal(record.state)) return record.state;
+      if (codeOf(response?.code) !== '200') {
+        ledger.change(record, 'failed', response?.msg || '服务器拒绝提交');
+        return record.state;
+      }
+      ledger.change(record, 'queued', '已入队，等待最终结果');
+      await ledger.wait(record, timeoutMs, signal);
+      if (terminal(record.state)) return record.state;
+      if (!signal?.aborted && await verify(course)) {
+        ledger.change(record, 'success', '已在官方已选课程记录中确认');
+        return record.state;
+      }
+      ledger.change(record, 'unknown', '结果待核实：停止重复提交，请查看官网已选课程');
+    } catch (error) {
+      // Timeout/abort/invalid JSON after POST does not prove that the server rejected it.
+      if (!terminal(record.state)) ledger.change(record, error?.definitive ? 'failed' : 'unknown', error?.message || '网络中断，提交结果待核实');
+    }
+    return record.state;
+  }
+
+  function delay(ms, signal) {
+    if (signal?.aborted) return Promise.resolve();
+    return new Promise(resolve => {
+      const finish = () => { clearTimeout(timer); signal?.removeEventListener('abort', finish); resolve(); };
+      const timer = setTimeout(finish, Math.max(0, ms));
+      signal?.addEventListener('abort', finish, { once: true });
+      if (signal?.aborted) finish();
+    });
+  }
+
+  function untilStopped(promise, signal) {
+    if (signal?.aborted) return Promise.resolve(false);
+    return new Promise((resolve, reject) => {
+      const stop = () => { cleanup(); resolve(false); };
+      const cleanup = () => signal?.removeEventListener('abort', stop);
+      signal?.addEventListener('abort', stop, { once: true });
+      Promise.resolve(promise).then(value => { cleanup(); resolve(value); }, error => { cleanup(); reject(error); });
+      if (signal?.aborted) stop();
+    });
+  }
+
+  async function run({ getCourses, send, mode, interval, signal, sleep = delay }) {
+    const active = new Map();
+    let rounds = 0;
+    let failed = false, failure;
+    const width = mode.isGrouped ? groupSize(mode.groupSize) : 1;
+    const pauseMs = intervalMs(interval, mode.isGrouped);
+    const limit = mode.isCyclic ? (mode.cycleCount > 0 ? mode.cycleCount : Infinity) : 1;
+    try {
+      while (!signal.aborted && !failed && rounds++ < limit) {
+        const courses = getCourses().filter(c => !pending(c.status) && c.status !== 'cancelled');
+        if (!courses.length) break;
+        for (let i = 0; i < courses.length && !signal.aborted && !failed; i += width) {
+          const batch = [];
+          for (const course of courses.slice(i, i + width)) {
+            if (signal.aborted || failed) break;
+            const key = keyOf(course);
+            if (active.has(key)) continue;
+            while (active.size >= width && !signal.aborted && !failed) await Promise.race(active.values());
+            if (signal.aborted || failed) break;
+            // Observe async failures immediately, even while the scheduler sleeps.
+            const task = Promise.resolve().then(() => signal.aborted || failed ? undefined : send(course))
+              .catch(error => { if (!failed) failure = error; failed = true; })
+              .finally(() => active.delete(key));
+            active.set(key, task);
+            batch.push(task);
+          }
+          if (!mode.isAsync) await Promise.all(batch);
+          if (!signal.aborted && !failed) await sleep(pauseMs, signal);
+        }
+        // A new cycle cannot overtake unresolved attempts from the previous cycle.
+        await Promise.all(active.values());
+      }
+    } finally {
+      await Promise.allSettled(active.values());
+    }
+    if (failed) throw failure;
+  }
+
+  function serializable(enrollDict, settings) {
+    const cleanSettings = JSON.parse(JSON.stringify(settings));
+    delete cleanSettings.token;
+    const cleanCourses = {};
+    for (const [key, course] of Object.entries(enrollDict)) {
+      const clean = { ...course };
+      delete clean.secretVal;
+      delete clean.token;
+      clean.status = pending(clean.status) ? 'unknown' : 'ready';
+      clean.message = ''; // Do not persist server messages.
+      cleanCourses[key] = clean;
+    }
+    return { version: 350, enrollDict: cleanCourses, settings: cleanSettings };
+  }
+
+  return { codeOf, pending, keyOf, groupSize, intervalMs, parseCodes, findCourse, containsClass, Ledger, attempt, delay, run, serializable };
+}
+
+  const core = createSeuCore();
+  const started = Date.now();
+  while (!(window.grablessonsVue?.lcParam?.currentBatch?.code && window.axios && document.getElementById('xsxkapp'))) {
+    if (Date.now() - started > 30000) { console.warn('[东大选课助手] 页面未就绪，请进入课程列表后刷新'); return; }
+    await core.delay(200);
+  }
+  if (document.getElementById('seu-helper-root')) return;
+  const grablessonsVue = window.grablessonsVue;
+  const tip = options => grablessonsVue.$message(options);
+  const version = [3,5,0];
+  let isRunning = false, shouldStop = false;
   let enrollDict = {};
-
-  // 设置
-  let settings = {};
-
-  // 定义默认设置
   const defaultSettings = {
-    token: "",
-    savedCourseCodes: "",
-    mode: {
-      isAsync: false,
-      isCyclic: true,
-      cycleCount: -1, // -1表示无限循环
-      enableSearch: true,
-    },
-    interval: {
-      sync: {
-        single: 300, // 同步单次间隔
-        group: 1000, // 同步分组间隔
-      },
-      async: {
-        single: 350, // 异步单次间隔
-        group: 1000, // 异步分组间隔
-      },
-    },
-    search: {
-      pageSize: 20, // 每页课程数量
-      pageDelay: 500, // 翻页延迟(ms)
-    },
-    announcement: {
-      hasRead: false, // 是否已读
-    },
+    savedCourseCodes: '',
+    mode: {isAsync: false, isCyclic: true, isGrouped: false, groupSize: 3, cycleCount: -1, enableSearch: true},
+    interval: {sync: {single: 1000, group: 1000}, async: {single: 1000, group: 1000}},
+    search: {pageSize: 20, pageDelay: 1000}, announcement: {hasRead: false}
   };
-
-  // 挂载的顶层组件
-  let app = document.getElementById("xsxkapp");
-
+  let settings = JSON.parse(JSON.stringify(defaultSettings));
+  const Components = {};
+  const app = document.createElement('div');
+  app.id = 'seu-helper-root';
+  document.body.appendChild(app);
   // 组件生成
   ((self) => {
     // 生成组件
@@ -80,7 +270,7 @@
         }
       }
       if (text) {
-        node.innerText = text;
+        node.textContent = String(text);
       }
       if (HTML) {
         node.innerHTML = HTML;
@@ -133,7 +323,7 @@
         self.createNode({
           tagName: "div",
           obj: {
-            id: "panel",
+            id: "seu-panel",
             style: `
               position: fixed;
               right: 0;
@@ -158,7 +348,7 @@
             self.createNode({
               tagName: "input",
               obj: {
-                id: "input-box",
+                id: "seu-input-box",
                 class: "el-input__inner",
                 style: `
                   width: 96%;
@@ -174,7 +364,7 @@
             self.createNode({
               tagName: "div",
               obj: {
-                id: "list-wrap",
+                id: "seu-list-wrap",
                 style: `
                   overflow: auto;
                   margin: 10px;
@@ -186,7 +376,7 @@
             self.createNode({
               tagName: "button",
               obj: {
-                id: "enroll-button",
+                id: "seu-enroll-button",
                 class: "el-button el-button--primary el-button--small is-round",
                 style: `
                   margin: 20px;
@@ -207,7 +397,7 @@
                     return;
                   }
                   if (isRunning) {
-                    await methods.stopEnrolling();
+                    return;
                   }
                   isRunning = true;
                   methods.updateUIState();
@@ -218,7 +408,7 @@
             self.createNode({
               tagName: "button",
               obj: {
-                id: "settings-stop-button",
+                id: "seu-settings-stop-button",
                 class: `el-button el-button--${
                   isRunning ? "danger" : "info"
                 } el-button--small is-round`,
@@ -235,7 +425,7 @@
                   if (isRunning) {
                     await methods.stopEnrolling();
                   } else {
-                    document.getElementById("mask").style.display = "block";
+                    document.getElementById("seu-mask").style.display = "block";
                     self.updatePopup(settings.mode.enableSearch, settings);
                   }
                 },
@@ -263,7 +453,7 @@
 
     // 生成抢课表格
     self.reloadList = () => {
-      let list_wrap = document.querySelector("#panel #list-wrap");
+      let list_wrap = document.querySelector("#seu-panel #seu-list-wrap");
       list_wrap.innerHTML = "";
       if (JSON.stringify(enrollDict) === "{}") {
         list_wrap.innerHTML =
@@ -313,7 +503,7 @@
                         obj: {
                           style: `text-align: center`,
                         },
-                        text: enrollDict[key].courseName,
+                        text: methods.displayCourse(enrollDict[key]),
                       }),
                       self.createNode({
                         tagName: "td",
@@ -347,6 +537,10 @@
                             ev: {
                               click: () => {
                                 const course = enrollDict[key];
+                                if (core.pending(course.status)) {
+                                  if (!window.confirm('本课程的服务器处理结果尚未确认。删除只移除本地记录，不会取消服务器队列；重新添加后可能再次提交。请先核实官网结果，确认仍要删除本地记录吗？')) return;
+                                  ledger.records.delete(core.keyOf(course));
+                                }
                                 delete enrollDict[key];
                                 methods.saveData();
                                 tip({
@@ -375,7 +569,7 @@
                             },
                             ev: {
                               click: () => {
-                                document.getElementById("mask").style.display =
+                                document.getElementById("seu-mask").style.display =
                                   "block";
                                 self.createPopUp(
                                   "详细信息",
@@ -403,7 +597,7 @@
       let node = self.createNode({
         tagName: "div",
         obj: {
-          id: "mask",
+          id: "seu-mask",
           style: `
               position: fixed;
               left: 0;
@@ -418,7 +612,7 @@
         ev: {
           click: () => {
             node.style.display = "none";
-            document.querySelectorAll(".temp").forEach((el) => {
+            document.querySelectorAll(".seu-temp").forEach((el) => {
               if (el.parentNode) el.parentNode.removeChild(el);
             });
           },
@@ -432,7 +626,7 @@
       const popupNode = self.createNode({
         tagName: "div",
         obj: {
-          class: "temp",
+          class: "seu-temp",
           style: `
             position: fixed;
             left: ${width ? 50 - 0.5 * width : 30}%;
@@ -493,7 +687,7 @@
                       ]
                     : []),
                   // 如果存在其他temp类元素,说明当前不是第一层弹窗
-                  ...(document.querySelectorAll(".temp").length > 0
+                  ...(document.querySelectorAll(".seu-temp").length > 0
                     ? [
                         self.createNode({
                           tagName: "button",
@@ -526,14 +720,14 @@
                 ev: {
                   click: () => {
                     if (onConfirm) onConfirm();
-                    if (document.querySelectorAll(".temp").length > 1) {
+                    if (document.querySelectorAll(".seu-temp").length > 1) {
                       if (popupNode.parentNode) {
                         popupNode.parentNode.removeChild(popupNode);
                       }
                     } else {
                       // 否则清除所有弹窗
-                      document.getElementById("mask").style.display = "none";
-                      document.querySelectorAll(".temp").forEach((el) => {
+                      document.getElementById("seu-mask").style.display = "none";
+                      document.querySelectorAll(".seu-temp").forEach((el) => {
                         if (el.parentNode) el.parentNode.removeChild(el);
                       });
                     }
@@ -586,14 +780,15 @@
         },
         30,
         45,
-        enableSearch
-          ? () => {
-              const searchSettings = self.showSearchSettings();
+        () => {
+              const searchSettings = self.showSearchSettings(mainSettings.tempSettings);
               self.createPopUp(
-                "搜索设置",
+                "更多设置",
                 searchSettings.node,
                 () => {
-                  Object.assign(settings, searchSettings.tempSettings);
+                  mainSettings.tempSettings.mode.groupSize = searchSettings.tempSettings.mode.groupSize;
+                  mainSettings.tempSettings.search = searchSettings.tempSettings.search;
+                  Object.assign(settings, JSON.parse(JSON.stringify(mainSettings.tempSettings)));
                   methods.saveData();
                   tip({
                     type: "success",
@@ -605,7 +800,6 @@
                 45
               );
             }
-          : null
       );
     };
 
@@ -627,11 +821,12 @@
       // 自动保存函数
       const autoSave = () => {
         if (!inputElement) return;
-        const currentValue = parseInt(inputElement.value);
-        if (currentValue !== currentBaseValue) {
-          onSave(currentValue);
-          currentBaseValue = currentValue;
-        }
+        const parsed = Number(inputElement.value);
+        const candidate = inputElement.value.trim() && Number.isFinite(parsed) ? Math.trunc(parsed) : currentBaseValue;
+        const currentValue = Math.max(Number(inputElement.min), Math.min(Number(inputElement.max), candidate));
+        inputElement.value = currentValue;
+        onSave(currentValue);
+        currentBaseValue = currentValue;
       };
 
       // 创建输入框
@@ -654,8 +849,8 @@
             e.preventDefault();
             const delta = e.deltaY > 0 ? -parseInt(step) : parseInt(step);
             const newValue = Math.max(
-              parseInt(min),
-              Math.min(parseInt(max), parseInt(e.target.value) + delta)
+              parseInt(inputElement.min),
+              Math.min(parseInt(inputElement.max), parseInt(e.target.value) + delta)
             );
             e.target.value = newValue;
             autoSave(); // 滚轮修改后立即保存
@@ -671,8 +866,8 @@
               const delta =
                 e.key === "ArrowUp" ? parseInt(step) : -parseInt(step);
               const newValue = Math.max(
-                parseInt(min),
-                Math.min(parseInt(max), parseInt(e.target.value) + delta)
+                parseInt(inputElement.min),
+                Math.min(parseInt(inputElement.max), parseInt(e.target.value) + delta)
               );
               e.target.value = newValue;
               autoSave(); // 方向键修改后立即保存
@@ -690,14 +885,14 @@
     // 设置
     self.showSettings = (tempSettings) => {
       tempSettings = tempSettings
-        ? tempSettings
+        ? JSON.parse(JSON.stringify(tempSettings))
         : JSON.parse(JSON.stringify(settings));
 
       const intervalInput = self.createNumberInput({
         value: methods.getCurrentInterval(tempSettings),
-        min: tempSettings.mode.isGrouped ? "1000" : "100",
-        max: tempSettings.mode.isGrouped ? "2000" : "1000",
-        step: "25",
+        min: tempSettings.mode.isGrouped ? "1000" : "1",
+        max: "60000",
+        step: "1",
         onSave: (value) => {
           const mode = tempSettings.mode.isAsync ? "async" : "sync";
           const type = tempSettings.mode.isGrouped ? "group" : "single";
@@ -705,6 +900,8 @@
         },
       });
 
+      intervalInput.input.id = "seu-interval";
+      intervalInput.input.setAttribute("aria-label", "发送间隔（毫秒）");
       const settingsNode = self.createNode({
         tagName: "div",
         obj: {
@@ -794,6 +991,7 @@
                     tempSettings.mode.isAsync = !e.target.checked;
                     const newValue = methods.getCurrentInterval(tempSettings);
                     intervalInput.input.value = newValue;
+                    intervalInput.input.min = tempSettings.mode.isGrouped ? "1000" : "1";
                   },
                 },
               }),
@@ -817,6 +1015,7 @@
                     tempSettings.mode.isAsync = e.target.checked;
                     const newValue = methods.getCurrentInterval(tempSettings);
                     intervalInput.input.value = newValue;
+                    intervalInput.input.min = tempSettings.mode.isGrouped ? "1000" : "1";
                   },
                 },
               }),
@@ -855,6 +1054,7 @@
                     tempSettings.mode.isGrouped = !e.target.checked;
                     const newValue = methods.getCurrentInterval(tempSettings);
                     intervalInput.input.value = newValue;
+                    intervalInput.input.min = tempSettings.mode.isGrouped ? "1000" : "1";
                   },
                 },
               }),
@@ -878,6 +1078,7 @@
                     tempSettings.mode.isGrouped = e.target.checked;
                     const newValue = methods.getCurrentInterval(tempSettings);
                     intervalInput.input.value = newValue;
+                    intervalInput.input.min = tempSettings.mode.isGrouped ? "1000" : "1";
                   },
                 },
               }),
@@ -984,10 +1185,16 @@
     };
 
     // 搜索设置
-    self.showSearchSettings = () => {
+    self.showSearchSettings = (source = settings) => {
       // 创建临时设置对象和引用变量
-      const tempSettings = JSON.parse(JSON.stringify(settings));
+      const tempSettings = JSON.parse(JSON.stringify(source));
 
+      const groupSizeInput = self.createNumberInput({
+        value: tempSettings.mode.groupSize,
+        min: "1", max: String(Number.MAX_SAFE_INTEGER), step: "1",
+        onSave: value => { tempSettings.mode.groupSize = core.groupSize(value); },
+      });
+      groupSizeInput.input.id = "seu-group-size";
       const pageSizeInput = self.createNumberInput({
         value: tempSettings.search.pageSize,
         min: "10",
@@ -1000,8 +1207,8 @@
 
       const pageDelayInput = self.createNumberInput({
         value: tempSettings.search.pageDelay,
-        min: "100",
-        max: "2000",
+        min: "1000",
+        max: "60000",
         step: "100",
         onSave: (value) => {
           tempSettings.search.pageDelay = value;
@@ -1012,6 +1219,14 @@
         tagName: "div",
         obj: { style: "margin: 10%" },
         children: [
+          self.createNode({
+            tagName: "div",
+            obj: { style: "margin-bottom: 5%" },
+            children: [
+              self.createNode({ tagName: "label", text: "每组课程数：", obj: { for: "seu-group-size", style: "margin-right: 10%" } }),
+              groupSizeInput.input,
+            ],
+          }),
           // 每页数量设置
           self.createNode({
             tagName: "div",
@@ -1097,7 +1312,7 @@
                   self.createNode({
                     tagName: "td",
                     obj: { style: `text-align: center` },
-                    text: `${course.courseName}`,
+                    text: `${methods.displayCourse(course)} ${course.message || ""}`,
                   }),
                 ],
               }),
@@ -1229,7 +1444,7 @@
 
       // 关闭公告弹窗的函数（需要在使用前定义）
       const closeAnnouncement = () => {
-        const mask = document.getElementById("mask");
+        const mask = document.getElementById("seu-mask");
         if (mask) mask.style.display = "none";
         if (popupNode && popupNode.parentNode) {
           popupNode.parentNode.removeChild(popupNode);
@@ -1329,7 +1544,7 @@
       });
 
       // 显示遮罩，并设置点击事件
-      const mask = document.getElementById("mask");
+      const mask = document.getElementById("seu-mask");
       if (mask) {
         mask.style.display = "block";
         // 为遮罩添加一次性点击事件监听器
@@ -1345,766 +1560,398 @@
       app.appendChild(popupNode);
     };
 
-    //生成抢课按钮
-    self.addEnrollButton = () => {
-      // 监听课程块的点击事件
-      document.addEventListener("click", function (event) {
-        const target = event.target;
-        const trElement = target.closest("tr.el-table__row");
-        if (trElement && trElement.classList.contains("expanded")) {
-          setTimeout(() => {
-            const expandedRow = trElement.nextElementSibling;
-            const expandedCell = expandedRow.querySelector(
-              "td.el-table__expanded-cell"
-            );
-            if (!expandedCell) {
-              console.error("未找到 expandedCell");
-              return;
-            }
+  })(Components);
 
-            // 获取课程编码
-            const courseCode = trElement.querySelector("td span").innerText;
-            // 获取课程名称
-            const courseName = trElement.querySelector(
-              "td:nth-child(2) span"
-            ).innerText;
+  // Embedded inside the userscript, after the retained v3 UI definitions.
+  let searching = false;
+  let runController = null;
+  let runPromise = null;
+  let attachedSocket = null;
+  const controllers = new Set();
+  const labels = { ready: '', submitting: '提交中', queued: '排队中', unknown: '待核实', failed: '失败', cancelled: '已取消' };
+  const ledger = new core.Ledger(record => {
+    const entry = Object.entries(enrollDict).find(([, course]) => core.keyOf(course) === core.keyOf(record.course));
+    if (!entry) return;
+    const [key, course] = entry;
+    course.status = record.state;
+    course.message = record.message;
+    if (record.state === 'success') {
+      delete enrollDict[key];
+      tip({ type: 'success', message: `${course.courseName}：已确认选课成功`, duration: 3000 });
+    } else if (['failed', 'unknown'].includes(record.state)) {
+      tip({ type: 'warning', message: `${course.courseName}：${record.message}`, duration: 4000 });
+    }
+    methods.saveData();
+    Components.reloadList();
+    methods.updateUIState();
+  });
 
-            // 获取 expandedCell 内的所有“选择”按钮
-            const selectButtons = Array.from(
-              expandedCell.querySelectorAll(
-                "button.el-button--primary.el-button--mini.is-round span"
-              )
-            ).filter((span) => span.innerText.includes("选择"));
-
-            selectButtons.forEach((selectButton) => {
-              // 创建“添加”按钮
-              const addButton = document.createElement("button");
-              addButton.className =
-                "el-button el-button--primary el-button--mini is-round add-course-button";
-              addButton.innerHTML = "<span>添加</span>";
-
-              // 存储课程编码到按钮属性中
-              addButton.setAttribute("data-course-code", courseCode);
-              addButton.setAttribute("data-course-name", courseName);
-
-              // 设置按钮的禁用状态
-              if (isRunning) {
-                addButton.disabled = true;
-                addButton.style.cursor = "not-allowed";
-                addButton.style.opacity = "0.5";
-              }
-
-              // 在“选择”按钮后插入“添加”按钮
-              selectButton.parentElement.parentElement.appendChild(addButton);
-
-              // 添加点击事件
-              addButton.addEventListener("click", function () {
-                // 获取课程班编号
-                const classRow = selectButton.closest(".el-card__body");
-                if (!classRow) {
-                  console.error("未找到 classRow");
-                  return;
-                }
-                const sequenceInfo = classRow
-                  .querySelector(".one-row span")
-                  .innerText.replace("[", "");
-
-                // 获取存储的课程编码
-                const storedCourseCode =
-                  addButton.getAttribute("data-course-code");
-
-                // 拼接课程编码与课程班编号
-                const courseString = storedCourseCode + sequenceInfo;
-
-                // 使用 addSingleCourse 函数添加课程
-                methods.addSingleCourse(courseString);
-              });
-            });
-          }, 100); // 增加延迟时间以确保详情块已插入
-        }
+  function batchId() { return String(grablessonsVue.lcParam.currentBatch.code); }
+  function availableTypes() {
+    const allowed = ['TJKC', 'FANKC', 'FAWKC', 'TYKC', 'XGKC'];
+    const shown = (grablessonsVue.menuData?.menuList || []).map(item => item.teachingClassType);
+    return allowed.filter(type => shown.includes(type));
+  }
+  function attachSocket() {
+    const socket = grablessonsVue.sock;
+    if (!socket || socket === attachedSocket) return;
+    if (attachedSocket) attachedSocket.removeEventListener('message', onSocketMessage);
+    attachedSocket = socket;
+    socket.addEventListener('message', onSocketMessage);
+  }
+  function onSocketMessage(event) {
+    try { ledger.receive(JSON.parse(event.data), batchId()); } catch { /* Ignore heartbeat/non-JSON frames. */ }
+  }
+  function clamp(value, min, max, fallback) {
+    return Number.isFinite(Number(value)) ? Math.max(min, Math.min(max, Math.trunc(Number(value)))) : fallback;
+  }
+  function definitiveError(message) {
+    runController?.abort();
+    return Object.assign(new Error(message), { definitive: true });
+  }
+  function normalizeSettings() {
+    for (const mode of ['sync', 'async']) {
+      for (const kind of ['single', 'group']) settings.interval[mode][kind] = core.intervalMs(settings.interval[mode][kind], kind === 'group');
+    }
+    settings.mode.groupSize = core.groupSize(settings.mode.groupSize);
+    settings.search.pageSize = clamp(settings.search.pageSize, 10, 100, 20);
+    settings.search.pageDelay = clamp(settings.search.pageDelay, 1000, 60000, 1000);
+    settings.mode.cycleCount = clamp(settings.mode.cycleCount, -1, 10000, -1) || 1;
+  }
+  async function post(path, data, { json = false, batch = batchId() } = {}) {
+    const base = new URL(window.axios.defaults.baseURL, location.href);
+    if (base.origin !== location.origin || base.pathname.replace(/\/$/, '') !== '/xsxk') throw definitiveError('官网接口地址变化，已停止提交');
+    const authKey = window.axiosKey || 'Authorization';
+    const auth = window.axios.defaults.headers[authKey] || window.axios.defaults.headers.common?.[authKey];
+    if (!auth) throw definitiveError('请先在官网登录');
+    const controller = new AbortController();
+    controllers.add(controller);
+    const timer = setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch(`${base.origin}/xsxk${path}`, {
+        method: 'POST', credentials: 'same-origin', signal: controller.signal,
+        headers: { [authKey]: auth, batchId: batch, 'Content-Type': json ? 'application/json' : 'application/x-www-form-urlencoded' },
+        body: json ? JSON.stringify(data) : new URLSearchParams(data).toString(),
       });
-    };
-  })((window.Components = window.Components || {}));
+      if (!response.ok) {
+        if ([401, 403, 429].includes(response.status)) throw definitiveError(`官网拒绝请求（HTTP ${response.status}），已停止，请检查登录状态`);
+        throw new Error(`官网请求返回 HTTP ${response.status}，请检查登录和网络`);
+      }
+      let body;
+      try { body = await response.json(); } catch { throw new Error('官网返回了非 JSON 内容，请检查 VPN 或重新登录'); }
+      if (['401', '402', '403', '429'].includes(core.codeOf(body?.code))) {
+        throw definitiveError('登录失效或请求受限，已停止，请回官网检查');
+      }
+      if (!body || body.code == null) throw new Error('官网响应结构变化，已停止');
+      return body;
+    } finally {
+      clearTimeout(timer);
+      controllers.delete(controller);
+    }
+  }
+  async function selectedRows() {
+    const result = await post('/elective/select', {});
+    if (core.codeOf(result.code) !== '200' || !Array.isArray(result.data)) throw new Error('无法核对已选课程，请在官网检查');
+    return result.data;
+  }
 
   let methods = {
-    // 初始化函数
     async init() {
-      // 初始化设置为默认值的深拷贝
-      settings = JSON.parse(JSON.stringify(defaultSettings));
-
-      let raw = JSON.parse(localStorage.getItem("july"));
-      if (raw) {
-        // 循环检查 sessionStorage.token 直到其不为 undefined
-        while (typeof sessionStorage.token === "undefined") {
-          await new Promise((resolve) => setTimeout(resolve, 50));
-        }
-
-        // 递归合并设置
-        const mergeSettings = (target, source) => {
-          Object.keys(target).forEach((key) => {
-            if (source[key] !== undefined) {
-              if (
-                typeof target[key] === "object" &&
-                !Array.isArray(target[key])
-              ) {
-                mergeSettings(target[key], source[key]);
-              } else {
-                target[key] = source[key];
-              }
-            }
-          });
-        };
-
-        if (raw.settings) {
-          mergeSettings(settings, raw.settings);
-        }
-
-        // 检查token匹配
-        if (settings.token === sessionStorage.token) {
-          enrollDict = raw.enrollDict;
-        } else if (raw.enrollDict && JSON.stringify(raw.enrollDict) !== "{}") {
-          const courseCodes = Object.keys(raw.enrollDict);
-          const inputBox = document.getElementById("input-box");
-          inputBox.value = courseCodes.join(" ");
-
-          if (settings.mode.enableSearch) {
-            tip({
-              type: "warning",
-              message: "token失效，尝试重新添加课程",
-              duration: 2000,
-            });
-
-            enrollDict = {};
-
-            // 课程类型中文映射
-            const typeNames = {
-              TJKC: "推荐课程",
-              FANKC: "方案内课程",
-              FAWKC: "方案外课程",
-              TYKC: "体育项目",
-              XGKC: "通选课",
-            };
-
-            // 尝试在不同类型中查找课程
-            const types = ["TJKC", "FANKC", "FAWKC", "TYKC", "XGKC"];
-            let remainingCodes = courseCodes;
-
-            const pageSize = settings.search.pageSize;
-
-            for (let type of types) {
-              if (!remainingCodes.length) break;
-              let pageNumber = 1;
-              while (true) {
-                if (!remainingCodes.length) break;
-                await new Promise((resolve) =>
-                  setTimeout(resolve, settings.search.pageDelay)
-                );
-                const { courseList, total } = await methods.searchCourse(
-                  type,
-                  pageNumber,
-                  pageSize
-                );
-
-                if (!courseList.length) break;
-
-                // 每页获取后立即尝试添加
-                if (courseList.length > 0) {
-                  remainingCodes = methods.addEnrollDict(
-                    remainingCodes.join(" "),
-                    type,
-                    courseList,
-                    false
-                  );
-                }
-                inputBox.value = remainingCodes.join(" ");
-
-                tip({
-                  type: "success",
-                  message: `已获取 ${typeNames[type]} 第 ${pageNumber} 页，剩余未找到课程：${remainingCodes.length}门`,
-                  duration: 2000,
-                });
-
-                if (pageNumber * pageSize >= total) break;
-
-                pageNumber++;
-              }
-            }
-
-            if (remainingCodes.length > 0) {
-              tip({
-                type: "warning",
-                message: `以下课程未找到：${remainingCodes}`,
-                duration: 2000,
-              });
-            }
-
-            settings.savedCourseCodes = remainingCodes.join(" ");
-          } else {
-            // 未启用搜索功能时的处理逻辑
-            const codeStr = courseCodes.join(" ");
-            inputBox.value = codeStr;
-            settings.savedCourseCodes = codeStr;
-
-            tip({
-              type: "warning",
-              message: "登录信息发生变动，已清空抢课列表",
-              duration: 1000,
-            });
-
-            enrollDict = {};
+      let raw;
+      try { raw = JSON.parse(localStorage.getItem('july') || 'null'); }
+      catch { tip({ type: 'warning', message: '旧配置无法读取，使用默认设置', duration: 3000 }); }
+      if (raw?.settings && typeof raw.settings === 'object') {
+        const merge = (target, source) => {
+          for (const key of Object.keys(target)) {
+            if (source?.[key] === undefined) continue;
+            if (target[key] && typeof target[key] === 'object') merge(target[key], source[key]);
+            else if (typeof target[key] === typeof source[key]) target[key] = source[key];
           }
+        };
+        merge(settings, raw.settings);
+      }
+      normalizeSettings();
+      let restoreCodes = [];
+      if (raw?.enrollDict && typeof raw.enrollDict === 'object') {
+        for (const [code, saved] of Object.entries(raw.enrollDict)) {
+          if (!saved || typeof saved !== 'object') continue;
+          const { secretVal, token, ...course } = saved;
+          course.courseBatch = String(course.courseBatch || '');
+          if (!/^[A-Z0-9]+$/i.test(code) || !course.classID) continue;
+          course.status = core.pending(course.status) ? 'unknown' : 'ready';
+          course.message = course.status === 'unknown' ? '上次提交结果待核实' : '需要重新获取当前会话课程信息';
+          enrollDict[code] = course;
+          if (course.status === 'unknown') ledger.restore(course);
+          if (course.courseBatch === batchId()) restoreCodes.push(code);
         }
       }
-
-      // 更新token
-      settings.token = sessionStorage.token;
-
-      // 初始化状态
-      isRunning = false;
-      shouldStop = false;
-
-      // 更新UI
+      attachSocket();
+      const watch = setInterval(attachSocket, 500);
+      window.addEventListener('pagehide', () => {
+        clearInterval(watch);
+        runController?.abort();
+        for (const controller of controllers) controller.abort();
+        attachedSocket?.removeEventListener('message', onSocketMessage);
+      }, { once: true });
+      Components.reloadList();
       methods.updateUIState();
-      window.Components.reloadList();
-
-      // 保存清理后的数据
+      const input = document.getElementById('seu-input-box');
+      input.value = core.parseCodes([settings.savedCourseCodes || '', ...restoreCodes].join(' ')).join(' ');
+      // Restored course credentials always come from the current session.
+      if (input.value) await methods.resolveCodes(input.value, true);
       methods.saveData();
-
-      // 检查是否需要显示公告（未读时显示）
-      if (!settings.announcement.hasRead) {
-        // 延迟显示公告，确保页面已完全加载
-        setTimeout(() => {
-          window.Components.showAnnouncement();
-        }, 500);
-      }
+      if (!settings.announcement.hasRead) Components.showAnnouncement();
     },
-    // 保存数据到本地存储
     saveData() {
-      localStorage.setItem("july", JSON.stringify({ enrollDict, settings }));
+      normalizeSettings();
+      try { localStorage.setItem('july', JSON.stringify(core.serializable(enrollDict, settings))); }
+      catch { tip({ type: 'warning', message: '本地设置未能保存，请勿在结果未明时刷新重试', duration: 3000 }); }
     },
-    //处理按钮拖动与点击
+    togglePanel() {
+      const panel = document.getElementById('seu-panel');
+      const open = panel.style.display !== 'block';
+      panel.style.display = open ? 'block' : 'none';
+      document.getElementById('seu-helper-toggle')?.setAttribute('aria-expanded', String(open));
+    },
     drag(e, node) {
-      let is_move = false;
-      let x = e.pageX - node.offsetLeft;
-      let y = e.pageY - node.offsetTop;
-      document.onmousemove = function (e) {
-        node.style.left = e.pageX - x + "px";
-        node.style.top = e.pageY - y + "px";
-        is_move = true;
-      };
-      document.onmouseup = function () {
+      if (e.button !== 0) return;
+      let moved = false;
+      const x = e.pageX - node.offsetLeft, y = e.pageY - node.offsetTop;
+      document.onmousemove = event => { node.style.left = `${event.pageX - x}px`; node.style.top = `${event.pageY - y}px`; moved = true; };
+      document.onmouseup = () => {
         document.onmousemove = document.onmouseup = null;
-        if (!is_move) {
-          let panel = document.getElementById("panel");
-          panel.style.display === "block"
-            ? (panel.style.display = "none")
-            : (panel.style.display = "block");
-        }
-        is_move = false;
+        if (!moved) methods.togglePanel();
       };
     },
-    // 更新UI状态（禁用/启用按钮）
     updateUIState() {
-      const inputBox = document.getElementById("input-box");
-      const settingsStopButton = document.getElementById(
-        "settings-stop-button"
-      );
-      const listWrap = document.getElementById("list-wrap");
-
-      if (isRunning) {
-        // 禁用输入和编辑功能
-        inputBox.disabled = true;
-        inputBox.style.cursor = "not-allowed";
-        inputBox.style.opacity = "0.5";
-
-        // 更新设置/停止按钮为停止状态
-        settingsStopButton.className =
-          "el-button el-button--danger el-button--small is-round";
-        settingsStopButton.textContent = "停止抢课";
-        settingsStopButton.style.cursor = "pointer";
-        settingsStopButton.style.opacity = "1";
-
-        // 禁用表格中的删除键
-        listWrap.querySelectorAll("button.delete-button").forEach((button) => {
-          button.disabled = true;
-          button.style.cursor = "not-allowed";
-          button.style.opacity = "0.5";
-        });
-
-        // 禁用添加课程按钮
-        document
-          .querySelectorAll("button.add-course-button")
-          .forEach((button) => {
-            button.disabled = true;
-            button.style.cursor = "not-allowed";
-            button.style.opacity = "0.5";
-          });
-      } else {
-        // 启用输入和编辑功能
-        inputBox.disabled = false;
-        inputBox.style.cursor = "auto";
-        inputBox.style.opacity = "1";
-
-        // 更新设置/停止按钮为设置状态
-        settingsStopButton.className =
-          "el-button el-button--info el-button--small is-round";
-        settingsStopButton.textContent = "扩展设置";
-        settingsStopButton.style.cursor = "pointer";
-        settingsStopButton.style.opacity = "1";
-
-        // 启用表格中的删除键
-        listWrap.querySelectorAll("button.delete-button").forEach((button) => {
-          button.disabled = false;
-          button.style.cursor = "pointer";
-          button.style.opacity = "1";
-        });
-
-        // 启用添加课程按钮
-        document
-          .querySelectorAll("button.add-course-button")
-          .forEach((button) => {
-            button.disabled = false;
-            button.style.cursor = "pointer";
-            button.style.opacity = "1";
-          });
+      const busy = isRunning || searching || shouldStop;
+      for (const node of document.querySelectorAll('#seu-input-box, #seu-enroll-button, button.delete-button, button.add-course-button')) {
+        node.disabled = busy;
+        node.style.opacity = busy ? '0.5' : '1';
+        node.style.cursor = busy ? 'not-allowed' : 'pointer';
+      }
+      const stop = document.getElementById('seu-settings-stop-button');
+      if (stop) {
+        stop.disabled = searching;
+        stop.className = `el-button el-button--${isRunning ? 'danger' : 'info'} el-button--small is-round`;
+        stop.textContent = shouldStop ? '正在停止' : isRunning ? '停止抢课' : '扩展设置';
       }
     },
-    // 处理输入框事件
-    async enter(e) {
-      if (e.key === "Enter") {
-        let node = document.getElementById("input-box");
-        let codeArray = node.value.toUpperCase().split(" ");
-        let failedCodes = methods.addEnrollDict(codeArray.join(" "));
-        
-        // 如果有失败的课程且启用了搜索功能，自动搜索
-        if (failedCodes.length > 0 && settings.mode.enableSearch) {
-          tip({
-            type: "info",
-            message: `当前页面未找到 ${failedCodes.length} 门课程，正在搜索...`,
-            duration: 2000,
-          });
-
-          const typeNames = {
-            TJKC: "推荐课程",
-            FANKC: "方案内课程",
-            FAWKC: "方案外课程",
-            TYKC: "体育项目",
-            XGKC: "通选课",
-          };
-
-          const types = ["TJKC", "FANKC", "FAWKC", "TYKC", "XGKC"];
-          let remainingCodes = failedCodes;
-          const pageSize = settings.search.pageSize;
-
-          for (let type of types) {
-            if (!remainingCodes.length) break;
-            let pageNumber = 1;
-            while (true) {
-              if (!remainingCodes.length) break;
-              await new Promise((resolve) =>
-                setTimeout(resolve, settings.search.pageDelay)
-              );
-              const { courseList, total } = await methods.searchCourse(
-                type,
-                pageNumber,
-                pageSize
-              );
-
+    async enter(event) {
+      if (event.key !== 'Enter' || isRunning || searching) return;
+      event.preventDefault();
+      await methods.resolveCodes(document.getElementById('seu-input-box').value);
+    },
+    async resolveCodes(value, restoring = false) {
+      searching = true;
+      methods.updateUIState();
+      let remaining = core.parseCodes(value);
+      try {
+        remaining = methods.addEnrollDict(remaining.join(' '), null, null, !restoring, restoring);
+        if (remaining.length && settings.mode.enableSearch) {
+          for (const type of availableTypes()) {
+            let page = 1;
+            const seen = new Set();
+            for (let pages = 0; remaining.length && pages < 500; pages++) {
+              await core.delay(settings.search.pageDelay);
+              const { courseList, total } = await methods.searchCourse(type, page, settings.search.pageSize);
               if (!courseList.length) break;
-
-              if (courseList.length > 0) {
-                remainingCodes = methods.addEnrollDict(
-                  remainingCodes.join(" "),
-                  type,
-                  courseList,
-                  false
-                );
-              }
-              node.value = remainingCodes.join(" ");
-
-              tip({
-                type: "success",
-                message: `已获取 ${typeNames[type]} 第 ${pageNumber} 页，剩余未找到课程：${remainingCodes.length}门`,
-                duration: 2000,
-              });
-
-              if (pageNumber * pageSize >= total) break;
-              pageNumber++;
+              const signature = JSON.stringify(courseList.map(c => [c.KCH, c.JXBID, c.tcList?.map(t => t.JXBID)]));
+              if (seen.has(signature)) throw new Error('查询重复返回同一页，已停止翻页，请在官网查找剩余课程');
+              seen.add(signature);
+              remaining = methods.addEnrollDict(remaining.join(' '), type, courseList, false, restoring);
+              if ((page - 1) * settings.search.pageSize + courseList.length >= total) break;
+              // The official client caches up to three pages per response.
+              page += Math.max(1, Math.ceil(courseList.length / settings.search.pageSize));
             }
-          }
-
-          if (remainingCodes.length > 0) {
-            tip({
-              type: "warning",
-              message: `以下课程未找到：${remainingCodes.join(" ")}`,
-              duration: 2000,
-            });
-          } else {
-            tip({
-              type: "success",
-              message: "所有课程已成功添加",
-              duration: 2000,
-            });
-          }
-          
-          // 搜索完成后，使用搜索后的剩余课程
-          failedCodes = remainingCodes;
-        }
-        
-        node.value = failedCodes.join(" "); // 将失败的课程代码替换到输入框中
-      }
-    },
-    // 插入课程
-    insertCourse(code, currentCourseList, currentType) {
-      let courseCode = code.substring(0, 8);
-      let teacherCode = code.substring(8);
-      let courseFlag = false,
-        teacherFlag = false;
-
-      const createCourseInfo = (course, teacher) => ({
-        // 选课信息
-        courseBatch: grablessonsVue.lcParam.currentBatch.code,
-        classID: teacher.JXBID,
-        courseType: currentType,
-        secretVal: teacher.secretVal,
-
-        // 更多信息
-        courseName: course.KCM,
-        teacherName: teacher.SKJS,
-        department: teacher.KKDW, // 开课单位(学院)
-        location: teacher.YPSJDD, // 授课地点
-        selectedCount: teacher.numberOfSelected, // 已选人数
-        totalCapacity: teacher.classCapacity, // 总容量
-        courseNature: teacher.KCXZ, // 课程性质
-        courseCategory: teacher.KCLB, // 课程类别
-      });
-
-      for (let course of currentCourseList) {
-        // 检查课程是否存在
-        if (course.KCH === courseCode) {
-          courseFlag = true;
-          // 检查教师是否存在
-          if (currentType !== "XGKC") {
-            for (let teacher of course.tcList) {
-              if (teacher.KXH === teacherCode) {
-                enrollDict[code] = createCourseInfo(course, teacher);
-                teacherFlag = true;
-              }
-            }
-          } else {
-            if (course.KXH === teacherCode) {
-              enrollDict[code] = createCourseInfo(course, course);
-              teacherFlag = true;
-            }
+            if (!remaining.length) break;
           }
         }
-      }
-      return { courseFlag, teacherFlag };
-    },
-    // 处理课程插入逻辑
-    handleCourseInsertion(code, currentCourseList, currentType) {
-      let { courseFlag, teacherFlag } = methods.insertCourse(
-        code,
-        currentCourseList,
-        currentType
-      );
-
-      if (!courseFlag) {
-        return {
-          success: false,
-          message: "没有查找到该课程，请检查课程号",
-          type: "error",
-        };
-      } else if (!teacherFlag) {
-        console.log("无效的教师号: ", code.substring(8));
-        return {
-          success: false,
-          message: "没有查找到该教师，请检查教师号",
-          type: "error",
-        };
-      } else {
-        const course = enrollDict[code];
-        return {
-          success: true,
-          message: `成功添加 ${course.teacherName} 的 ${course.courseName}`,
-          type: "success",
-        };
-      }
-    },
-    // 添加课程到抢课列表
-    addEnrollDict(
-      str,
-      currentType = null,
-      currentCourseList = null,
-      showTip = true
-    ) {
-      if (!str) return [];
-      // 如果没有传入参数，使用默认值
-      currentType = currentType || grablessonsVue.teachingClassType;
-      currentCourseList = currentCourseList || grablessonsVue.courseList;
-
-      let codeArray = str.split(" ");
-      let failedCodes = [];
-
-      for (let i = 0; i < codeArray.length; i++) {
-        let code = codeArray[i];
-        if (!code) continue;
-        const course = enrollDict[code];
-        if (course) {
-          if (showTip) {
-            tip({
-              type: "error",
-              message: `${course.teacherName} 的 ${course.courseName} 已添加`,
-              duration: 1000,
-            });
-          }
-          continue;
-        }
-
-        let result = methods.handleCourseInsertion(
-          code,
-          currentCourseList,
-          currentType
-        );
-
-        if (!result.success) {
-          failedCodes.push(code);
-        }
-        if (showTip) {
-          tip({
-            type: result.type,
-            message: result.message,
-            duration: 1000,
-          });
-        }
-      }
-      methods.saveData();
-      window.Components.reloadList();
-      return failedCodes;
-    },
-    // 通过页面按钮添加课程
-    addSingleCourse(code) {
-      if (!code) return;
-      let currentType = grablessonsVue.teachingClassType;
-      let currentCourseList = grablessonsVue.courseList;
-      const course = enrollDict[code];
-      if (course) {
-        tip({
-          type: "error",
-          message: `${course.teacherName} 的 ${course.courseName} 已添加`,
-          duration: 1000,
-        });
-        return;
-      }
-
-      let result = methods.handleCourseInsertion(
-        code,
-        currentCourseList,
-        currentType
-      );
-
-      tip({
-        type: result.type,
-        message: result.message,
-        duration: 1000,
-      });
-
-      methods.saveData();
-      window.Components.reloadList();
-    },
-    // 获取当前应用的间隔时间
-    getCurrentInterval(settingsObj) {
-      const mode = settingsObj.mode.isAsync ? "async" : "sync";
-      const type = settingsObj.mode.isGrouped ? "group" : "single";
-      return settingsObj.interval[mode][type];
-    },
-    // 一键抢课
-    async enroll() {
-      let key_list = Object.keys(enrollDict).filter(
-        (key) =>
-          enrollDict[key].courseBatch ===
-          grablessonsVue.lcParam.currentBatch.code
-      );
-      if (!key_list.length) {
-        tip({
-          type: "warning",
-          message: "抢课列表为空",
-          duration: 1000,
-        });
-        isRunning = false;
+      } catch (error) { tip({ type: 'warning', message: error.message, duration: 4000 }); }
+      finally {
+        document.getElementById('seu-input-box').value = remaining.join(' ');
+        settings.savedCourseCodes = remaining.join(' ');
+        searching = false;
+        methods.saveData();
+        Components.reloadList();
         methods.updateUIState();
-        return;
       }
-
-      let index = 0;
-
-      // 发送单个抢课请求并处理响应
-      const sendEnrollRequest = async (key) => {
-        const course = enrollDict[key];
-        const enrollResponse = await request({
-          url: "/elective/clazz/add",
-          method: "POST",
-          headers: {
-            batchId: course.courseBatch,
-            "content-type": "application/x-www-form-urlencoded",
-          },
-          data: Qs.stringify({
-            clazzType: course.courseType,
-            clazzId: course.classID,
-            secretVal: course.secretVal,
-          }),
-        });
-
-        let type = enrollResponse.data.code === 200 ? "success" : "warning";
-        tip({
-          type,
-          message:
-            enrollResponse.data.code === 200
-              ? `已成功添加 ${course.teacherName} 的 ${course.courseName} 到选课队列`
-              : `${course.teacherName} 的 ${course.courseName}: ${enrollResponse.data.msg}`,
-          duration: 1000,
-        });
-
-        if (enrollResponse.data.code === 200) {
-          delete enrollDict[key];
-          methods.saveData();
-          window.Components.reloadList();
-          return true;
-        } else if (enrollResponse.data.code === 301) {
-          const confirmResponse = await request({
-            url: "/elective/clazz/add",
-            method: "POST",
-            headers: {
-              batchId: course.courseBatch,
-              "content-type": "application/x-www-form-urlencoded",
-            },
-            data: Qs.stringify({
-              clazzType: course.courseType,
-              clazzId: course.courseCode,
-              secretVal: course.secretVal,
-              isConfirm: 1,
-            }),
-          });
-
-          if (confirmResponse.data.code === 200) {
-            tip({
-              type: "success",
-              message: `已成功添加 ${course.teacherName} 的 ${course.courseName} 到选课队列`,
-              duration: 1000,
-            });
+    },
+    addEnrollDict(value, type = null, rows = null, showTip = true, restoring = false) {
+      type ||= grablessonsVue.teachingClassType;
+      rows ||= grablessonsVue.courseList;
+      const remaining = [];
+      for (const code of core.parseCodes(value)) {
+        const old = enrollDict[code];
+        if (old?.secretVal && old.courseBatch === batchId() && !restoring) continue;
+        const found = availableTypes().includes(type) ? core.findCourse(code, rows, type, batchId()) : null;
+        if (!found) { remaining.push(code); continue; }
+        if (old && core.pending(old.status) && core.keyOf(old) === core.keyOf(found)) {
+          Object.assign(old, found, { status: old.status, message: old.message });
+        } else enrollDict[code] = found;
+        if (showTip) tip({ type: 'success', message: `${found.courseName} 已添加到本地待选列表`, duration: 1500 });
+      }
+      methods.saveData();
+      Components.reloadList();
+      methods.updateUIState();
+      return remaining;
+    },
+    addSingleCourse(code) {
+      if (!isRunning && !searching) methods.addEnrollDict(code);
+    },
+    getCurrentInterval(value) {
+      return core.intervalMs(value.interval[value.mode.isAsync ? 'async' : 'sync'][value.mode.isGrouped ? 'group' : 'single'], value.mode.isGrouped);
+    },
+    async enroll() {
+      if (runPromise || searching) return;
+      isRunning = true;
+      shouldStop = false;
+      runController = new AbortController();
+      const signal = runController.signal;
+      const originalBatch = batchId();
+      methods.updateUIState();
+      runPromise = (async () => {
+        if (String(grablessonsVue.lcParam.currentBatch.typeCode) === '01') throw new Error('当前为志愿轮次，请使用官网填写志愿；本版自动提交支持普通选课轮次');
+        const selected = await selectedRows();
+        for (const [key, course] of Object.entries(enrollDict)) {
+          if (course.courseBatch !== originalBatch) continue;
+          if (core.containsClass(selected, course.classID)) {
             delete enrollDict[key];
-            methods.saveData();
-            window.Components.reloadList();
-            return true;
+            ledger.records.delete(core.keyOf(course));
           }
+          else if (course.status === 'cancelled') course.status = 'ready';
         }
-        return false;
-      };
-
-      const doEnroll = async () => {
-        if (shouldStop) {
-          isRunning = false;
-          methods.updateUIState();
-          return;
-        }
-
-        if (index >= key_list.length) {
-          if (settings.mode.isCyclic && Object.keys(enrollDict).length) {
-            key_list = Object.keys(enrollDict).filter(
-              (key) =>
-                enrollDict[key].courseBatch ===
-                grablessonsVue.lcParam.currentBatch.code
-            );
-            if (key_list.length) {
-              index = 0;
-            } else {
-              isRunning = false;
-              methods.updateUIState();
+        methods.saveData();
+        Components.reloadList();
+        await core.run({
+          signal, mode: { ...settings.mode }, interval: methods.getCurrentInterval(settings),
+          getCourses: () => Object.values(enrollDict).filter(c => c.courseBatch === originalBatch),
+          send: async course => {
+            if (signal.aborted) return;
+            if (batchId() !== originalBatch) { runController.abort(); throw new Error('选课轮次已变化，请重新添加课程'); }
+            if (!course.secretVal) { course.status = 'cancelled'; course.message = '请重新搜索本课程，获取当前会话信息'; return; }
+            if (course.hasTest || (String(grablessonsVue.sysParam.needBook) === '1' && String(grablessonsVue.lcParam.currentBatch.canSelectBook) === '1')) {
+              course.status = 'cancelled'; course.message = '本课程需填写实验班或教材选项，请使用官网选择';
+              tip({ type: 'warning', message: `${course.courseName}：${course.message}`, duration: 4000 });
               return;
             }
-          } else {
-            isRunning = false;
-            methods.updateUIState();
-            return;
-          }
-        }
-
-        if (settings.mode.isGrouped) {
-          // 分组发送模式：每组3个请求
-          const groupKeys = key_list.slice(index, index + 3);
-          index += 3;
-
-          if (settings.mode.isAsync) {
-            // 异步模式：同时发送所有请求
-            groupKeys.forEach((key) => sendEnrollRequest(key));
-          } else {
-            // 同步模式：等待所有请求完成
-            await Promise.all(groupKeys.map((key) => sendEnrollRequest(key)));
-          }
-        } else {
-          // 单个发送模式
-          const key = key_list[index++];
-          if (!settings.mode.isAsync) {
-            await sendEnrollRequest(key);
-          } else {
-            sendEnrollRequest(key);
-          }
-        }
-
-        // 等待间隔后发起下一次请求
-        await new Promise((resolve) =>
-          setTimeout(resolve, methods.getCurrentInterval(settings))
-        );
-        doEnroll();
-      };
-
-      // 开始执行
-      doEnroll();
+            attachSocket();
+            if (attachedSocket?.readyState !== 1) { runController.abort(); throw new Error('官网结果推送连接未就绪，请等待连接恢复或刷新官网'); }
+            await core.attempt({ course, ledger, signal,
+              submit: data => post('/elective/clazz/add', data, { batch: originalBatch }),
+              confirm: async message => {
+                if (signal.aborted) return false;
+                try { await grablessonsVue.$confirm(`${message}，确认选择这门课程吗？`, '提醒', { type: 'warning', closeOnClickModal: false }); return !signal.aborted; }
+                catch { return false; }
+              },
+              verify: async target => core.containsClass(await selectedRows(), target.classID),
+            });
+          },
+        });
+        const unresolved = Object.values(enrollDict).filter(c => c.courseBatch === originalBatch && core.pending(c.status));
+        if (unresolved.length) tip({ type: 'warning', message: `${unresolved.length} 门课程结果待核实，已保留并暂停重复提交`, duration: 5000 });
+      })();
+      try { await runPromise; }
+      catch (error) { tip({ type: 'warning', message: error.message || '运行中断，请检查官网', duration: 4000 }); }
+      finally {
+        runController.abort();
+        isRunning = false; shouldStop = false; runPromise = null;
+        methods.saveData(); Components.reloadList(); methods.updateUIState();
+      }
     },
-    // 停止抢课
     async stopEnrolling() {
       shouldStop = true;
-      while (isRunning) {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-      await new Promise((resolve) =>
-        setTimeout(resolve, methods.getCurrentInterval(settings))
-      );
-      shouldStop = false;
+      runController?.abort();
+      for (const controller of controllers) controller.abort();
       methods.updateUIState();
+      // Stopping cannot undo a request already accepted by the server.
+      if (runPromise) await runPromise.catch(() => {});
     },
-    // 搜索课程
     async searchCourse(type, pageNumber, pageSize) {
-      const params = {
-        teachingClassType: type,
-        pageNumber: pageNumber,
-        pageSize: pageSize,
-        orderBy: "",
-        campus: grablessonsVue.currentCampus.code,
-      };
-
-      try {
-        const response = await request.post("/elective/clazz/list", params);
-        const { data } = response;
-
-        if (data && data.code === 200) {
-          return {
-            courseList: data.data.rows,
-            total: data.data.total,
-          };
-        }
-      } catch (error) {
-        console.error("搜索课程失败:", error);
-        tip({
-          type: "error",
-          message: "搜索课程失败",
-          duration: 1000,
-        });
-      }
-
-      return { courseList: [], total: 0 };
+      const result = await post('/elective/clazz/list', {
+        teachingClassType: type, pageNumber, pageSize, orderBy: '', campus: grablessonsVue.currentCampus.code,
+      }, { json: true });
+      if (core.codeOf(result.code) !== '200' || !Array.isArray(result.data?.rows) || !Number.isFinite(Number(result.data.total))) throw new Error(result.msg || '课程查询响应结构变化');
+      return { courseList: result.data.rows, total: Number(result.data.total) };
     },
+    displayCourse(course) { return `${course.courseName}${labels[course.status] ? ` [${labels[course.status]}]` : ''}`; },
   };
-  window.Components.mount();
-  methods.init();
+
+  // Keep original page handlers intact. Add one helper button per teaching-class card.
+  Components.addEnrollButton = () => {
+    let scheduled = false;
+    const scan = () => {
+      scheduled = false;
+      const retained = new Set();
+      const supported = availableTypes().includes(grablessonsVue.teachingClassType);
+      for (const select of document.querySelectorAll('button.el-button')) {
+        if (!supported || select.closest('#seu-helper-root') || select.classList.contains('add-course-button') || !/^选择$/.test(select.textContent.trim())) continue;
+        const parent = select.parentElement;
+        if (!parent) continue;
+        const card = select.closest('.el-card__body') || select.closest('tr');
+        if (!card) continue;
+        const container = select.closest('.el-collapse-item') || select.closest('td.el-table__expanded-cell')?.parentElement?.previousElementSibling || card;
+        const title = container.textContent || '';
+        const text = card.textContent || '';
+        const matches = [];
+        for (const course of grablessonsVue.courseList || []) {
+          if (!title.includes(course.KCH)) continue;
+          for (const teacher of course.tcList || [course]) {
+            const sequence = String(teacher.KXH || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            if (sequence && new RegExp(`\\[\\s*${sequence}\\s*\\]`).test(text)) matches.push(`${course.KCH}${teacher.KXH}`);
+          }
+        }
+        if (matches.length !== 1) continue;
+        let button = parent.querySelector('.add-course-button');
+        if (!button) {
+          button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'el-button el-button--primary el-button--mini is-round add-course-button';
+          button.textContent = '添加';
+          button.addEventListener('click', event => { event.stopPropagation(); methods.addSingleCourse(button.dataset.seuCourseCode); });
+          parent.appendChild(button);
+        }
+        button.dataset.seuCourseCode = matches[0];
+        button.disabled = isRunning || searching;
+        retained.add(button);
+      }
+      for (const button of document.querySelectorAll('button.add-course-button')) if (!retained.has(button)) button.remove();
+    };
+    const observer = new MutationObserver(() => { if (!scheduled) { scheduled = true; setTimeout(scan, 100); } });
+    observer.observe(document.getElementById('xsxkapp'), { childList: true, characterData: true, subtree: true });
+    scan();
+    window.addEventListener('pagehide', () => observer.disconnect(), { once: true });
+  };
+
+  // The helper lives outside #xsxkapp: do not depend on host-scoped launcher CSS
+  // or Element UI's icon font for the only way to reopen the panel.
+  Components.createTag = () => {
+    const node = document.createElement('button');
+    node.id = 'seu-helper-toggle';
+    node.type = 'button';
+    node.title = '打开或关闭选课助手（可拖动）';
+    node.setAttribute('aria-label', '打开或关闭选课助手');
+    node.setAttribute('aria-controls', 'seu-panel');
+    node.setAttribute('aria-expanded', 'true');
+    node.style.cssText = `position:fixed;top:250px;left:30px;z-index:1314;
+      display:flex;align-items:center;justify-content:center;box-sizing:border-box;
+      width:40px;height:40px;min-width:40px;min-height:40px;padding:0;margin:0;
+      border:0;border-radius:50%;background:#2b2b2b;color:#fff;
+      cursor:pointer;user-select:none;box-shadow:0 2px 8px rgba(0,0,0,.25);`;
+    node.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24"
+      aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8"
+      stroke-linecap="round" stroke-linejoin="round" style="display:block;pointer-events:none;flex-shrink:0">
+      <rect x="3" y="5" width="18" height="16" rx="2"/>
+      <path d="M16 3v4M8 3v4M3 11h18M7 15h2M11 15h2M15 15h2M7 18h2M11 18h2"/>
+    </svg>`;
+    node.addEventListener('mousedown', event => methods.drag(event, node));
+    // Mouse activation is handled on mouseup, preserving the original drag/click
+    // distinction. Native keyboard activation has no mousedown/mouseup pair.
+    node.addEventListener('click', event => { if (event.detail === 0) methods.togglePanel(); });
+    app.appendChild(node);
+  };
+
+  Components.mount();
+  methods.init().catch(error => tip({ type: 'warning', message: error.message || '助手初始化失败', duration: 5000 }));
+
 })();
