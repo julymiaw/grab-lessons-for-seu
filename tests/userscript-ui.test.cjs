@@ -159,9 +159,9 @@ test('设置切换后仍可保存同步和异步单个间隔 1 毫秒，更多�
   const f = await fixture();
   let restored;
   try {
-    assert.match(script, /\/\/ @version\s+3\.5\.0\s/);
+    assert.match(script, /\/\/ @version\s+3\.5\.1\s/);
     assert.match(script, /\/\/ @author\s+july, nada\s/);
-    assert.match(f.w.document.getElementById('seu-panel').textContent, /ver3\.5\.0/);
+    assert.match(f.w.document.getElementById('seu-panel').textContent, /ver3\.5\.1/);
     f.w.document.getElementById('seu-settings-stop-button').click();
     await sleep(5);
     const main = f.w.document.querySelector('.seu-temp');
@@ -245,4 +245,65 @@ test('Vue 复用卡片节点后，添加按钮重新绑定教学班；退选按�
     await sleep(140);
     assert.equal(f.w.document.querySelector('.add-course-button'), null);
   } finally { f.dom.window.close(); }
+});
+
+
+test('恢复原版默认间隔，已有自定义间隔不被覆盖', async () => {
+  const fresh = await fixture();let restored;
+  try {
+    const defaults = JSON.parse(fresh.w.localStorage.getItem('july')).settings;
+    assert.deepEqual(defaults.interval, { sync: { single: 300, group: 1000 }, async: { single: 350, group: 1000 } });
+    assert.equal(defaults.search.pageDelay, 500);
+    restored = await fixture('mobile', JSON.stringify({settings:{interval:{sync:{single:777}},search:{pageDelay:200},announcement:{hasRead:true}}}));
+    const saved = JSON.parse(restored.w.localStorage.getItem('july')).settings;
+    assert.equal(saved.interval.sync.single, 777);assert.equal(saved.search.pageDelay, 200);
+  } finally { fresh.dom.window.close();restored?.dom.window.close(); }
+});
+
+for (const isAsync of [false, true]) test(`${isAsync ? '异步' : '同步'}面板：不同课程按 HTTP 语义调度，最终推送分别结算`, async () => {
+  const f = await fixture('mobile',JSON.stringify({settings:{mode:{isAsync,isCyclic:false},interval:{sync:{single:20},async:{single:20}},announcement:{hasRead:true}}}),'queued');
+  let release;const first = new Promise(resolve => { release = resolve; });
+  try {
+    f.w.grablessonsVue.courseList.push({ KCH:'B09P0002',KCM:'第二门',tcList:[{...teacher,JXBID:'fixture-class-b'}] });
+    const original = f.w.fetch;
+    f.w.fetch = async (url, options) => {
+      const result = await original(url,options);
+      if(url.endsWith('/clazz/add')&&new URLSearchParams(options.body).get('clazzId')==='fixture-class')await first;
+      return result;
+    };
+    const input=f.w.document.getElementById('seu-input-box');input.value='B09P000101 B09P000201';
+    input.dispatchEvent(new f.w.KeyboardEvent('keydown',{key:'Enter',bubbles:true}));await sleep(10);
+    f.w.document.getElementById('seu-enroll-button').click();await sleep(50);
+    assert.equal(f.calls.filter(c=>c.path.endsWith('/clazz/add')).length,isAsync?2:1);
+    assert.equal(f.calls.filter(c=>c.path.endsWith('/elective/select')).length,0);
+    release();await sleep(50);
+    assert.equal(f.calls.filter(c=>c.path.endsWith('/clazz/add')).length,2);
+    assert.match(f.w.document.getElementById('seu-list-wrap').textContent,/排队中/);
+    for(const clazzId of ['fixture-class','fixture-class-b'])f.w.grablessonsVue.sock.dispatchEvent(new f.w.MessageEvent('message',{data:JSON.stringify({code:200,data:{operationType:'1',clazzId}})}));
+    await sleep(20);
+    assert.match(f.w.document.getElementById('seu-list-wrap').textContent,/还未选择课程/);
+    assert.equal(input.disabled,false);
+  } finally { release();f.dom.window.close(); }
+});
+
+test('没有 WebSocket 时仍提交，并通过已选列表核验；不因课程标记直接拦截', async () => {
+  const f=await fixture('mobile',JSON.stringify({settings:{mode:{isCyclic:false},announcement:{hasRead:true}}}),'queued');
+  try {
+    f.w.grablessonsVue.sock=null;
+    f.w.grablessonsVue.lcParam.currentBatch.typeCode='01';
+    f.w.grablessonsVue.sysParam.needBook='1';f.w.grablessonsVue.lcParam.currentBatch.canSelectBook='1';
+    Object.assign(f.w.grablessonsVue.courseList[0].tcList[0],{hasTest:'1',hasBook:'1'});
+    const originalTimer=f.w.setTimeout.bind(f.w);
+    f.w.setTimeout=(fn,ms,...args)=>originalTimer(fn,ms===20000?5:ms,...args);
+    const original=f.w.fetch;
+    f.w.fetch=async(url,options)=>{
+      const response=await original(url,options);
+      if(url.endsWith('/elective/select'))return {ok:true,json:async()=>({code:200,data:[{JXBID:'fixture-class'}]})};
+      return response;
+    };
+    f.w.document.querySelector('.add-course-button').click();f.w.document.getElementById('seu-enroll-button').click();await sleep(50);
+    assert.equal(f.calls.filter(c=>c.path.endsWith('/clazz/add')).length,1);
+    assert.equal(f.calls.filter(c=>c.path.endsWith('/elective/select')).length,1);
+    assert.match(f.w.document.getElementById('seu-list-wrap').textContent,/还未选择课程/);
+  } finally {f.dom.window.close();}
 });

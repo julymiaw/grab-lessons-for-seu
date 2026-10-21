@@ -954,7 +954,7 @@
 
       const pageDelayInput = self.createNumberInput({
         value: tempSettings.search.pageDelay,
-        min: "1000",
+        min: "100",
         max: "60000",
         step: "100",
         onSave: (value) => {

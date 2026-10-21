@@ -12,7 +12,7 @@ let output = `// ==UserScript==
 // @name        东南大学选课助手（稳定版）
 // @namespace   http://tampermonkey.net/
 // @version     ${release}
-// @description 适配2026选课页面；保留原面板，等待队列最终结果，防止重复提交
+// @description 批量添加课程，按间隔提交，跟踪队列最终结果
 // @author      ${author}
 // @license     MIT
 // @match       https://newxk.urp.seu.edu.cn/xsxk/elective/grablessons*
@@ -38,8 +38,8 @@ let output = `// ==UserScript==
   const defaultSettings = {
     savedCourseCodes: '',
     mode: {isAsync: false, isCyclic: true, isGrouped: false, groupSize: 3, cycleCount: -1, enableSearch: true},
-    interval: {sync: {single: 1000, group: 1000}, async: {single: 1000, group: 1000}},
-    search: {pageSize: 20, pageDelay: 1000}, announcement: {hasRead: false}
+    interval: {sync: {single: 300, group: 1000}, async: {single: 350, group: 1000}},
+    search: {pageSize: 20, pageDelay: 500}, announcement: {hasRead: false}
   };
   let settings = JSON.parse(JSON.stringify(defaultSettings));
   const Components = {};

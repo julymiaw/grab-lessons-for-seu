@@ -51,7 +51,7 @@
     }
     settings.mode.groupSize = core.groupSize(settings.mode.groupSize);
     settings.search.pageSize = clamp(settings.search.pageSize, 10, 100, 20);
-    settings.search.pageDelay = clamp(settings.search.pageDelay, 1000, 60000, 1000);
+    settings.search.pageDelay = clamp(settings.search.pageDelay, 100, 60000, 500);
     settings.mode.cycleCount = clamp(settings.mode.cycleCount, -1, 10000, -1) || 1;
   }
   async function post(path, data, { json = false, batch = batchId() } = {}) {
@@ -245,10 +245,11 @@
       runController = new AbortController();
       const signal = runController.signal;
       const originalBatch = batchId();
+      const results = new Set();
       methods.updateUIState();
       runPromise = (async () => {
-        if (String(grablessonsVue.lcParam.currentBatch.typeCode) === '01') throw new Error('当前为志愿轮次，请使用官网填写志愿；本版自动提交支持普通选课轮次');
-        const selected = await selectedRows();
+        const courses = Object.values(enrollDict).filter(c => c.courseBatch === originalBatch);
+        const selected = courses.some(c => core.pending(c.status)) ? await selectedRows() : [];
         for (const [key, course] of Object.entries(enrollDict)) {
           if (course.courseBatch !== originalBatch) continue;
           if (core.containsClass(selected, course.classID)) {
@@ -261,19 +262,18 @@
         Components.reloadList();
         await core.run({
           signal, mode: { ...settings.mode }, interval: methods.getCurrentInterval(settings),
+          waitForPending: async () => {
+            if (!results.size) return false;
+            await Promise.race(results);
+            return true;
+          },
           getCourses: () => Object.values(enrollDict).filter(c => c.courseBatch === originalBatch),
           send: async course => {
             if (signal.aborted) return;
             if (batchId() !== originalBatch) { runController.abort(); throw new Error('选课轮次已变化，请重新添加课程'); }
             if (!course.secretVal) { course.status = 'cancelled'; course.message = '请重新搜索本课程，获取当前会话信息'; return; }
-            if (course.hasTest || (String(grablessonsVue.sysParam.needBook) === '1' && String(grablessonsVue.lcParam.currentBatch.canSelectBook) === '1')) {
-              course.status = 'cancelled'; course.message = '本课程需填写实验班或教材选项，请使用官网选择';
-              tip({ type: 'warning', message: `${course.courseName}：${course.message}`, duration: 4000 });
-              return;
-            }
             attachSocket();
-            if (attachedSocket?.readyState !== 1) { runController.abort(); throw new Error('官网结果推送连接未就绪，请等待连接恢复或刷新官网'); }
-            await core.attempt({ course, ledger, signal,
+            const job = core.dispatch({ course, ledger, signal,
               submit: data => post('/elective/clazz/add', data, { batch: originalBatch }),
               confirm: async message => {
                 if (signal.aborted) return false;
@@ -282,8 +282,15 @@
               },
               verify: async target => core.containsClass(await selectedRows(), target.classID),
             });
+            const result = job.result.catch(error => {
+              runController.abort();
+              tip({ type: 'warning', message: error.message || '运行中断', duration: 4000 });
+            }).finally(() => results.delete(result));
+            results.add(result);
+            await job.response;
           },
         });
+        await Promise.allSettled(results);
         const unresolved = Object.values(enrollDict).filter(c => c.courseBatch === originalBatch && core.pending(c.status));
         if (unresolved.length) tip({ type: 'warning', message: `${unresolved.length} 门课程结果待核实，已保留并暂停重复提交`, duration: 5000 });
       })();
@@ -291,6 +298,8 @@
       catch (error) { tip({ type: 'warning', message: error.message || '运行中断，请检查官网', duration: 4000 }); }
       finally {
         runController.abort();
+        for (const controller of controllers) controller.abort();
+        await Promise.allSettled(results);
         isRunning = false; shouldStop = false; runPromise = null;
         methods.saveData(); Components.reloadList(); methods.updateUIState();
       }

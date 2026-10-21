@@ -33,8 +33,7 @@ function createSeuCore() {
           location: teacher.YPSJDD || '', selectedCount: teacher.YXRS ?? teacher.numberOfSelected ?? '',
           totalCapacity: teacher.KRL ?? teacher.classCapacity ?? '',
           courseNature: teacher.KCXZ || course.KCXZ || '', courseCategory: teacher.KCLB || course.KCLB || '',
-          hasTest: codeOf(teacher.hasTest) === '1', hasBook: codeOf(teacher.hasBook) === '1',
-          selected: codeOf(teacher.SFYX) === '1', status: 'ready', message: '',
+          status: 'ready', message: '',
         };
       }
     }
@@ -98,31 +97,33 @@ function createSeuCore() {
     }
   }
 
-  async function attempt({ course, ledger, submit, confirm, verify, signal, timeoutMs = 20000 }) {
+  async function attempt({ course, ledger, submit, confirm, verify, signal, timeoutMs = 20000, onResponse = () => {} }) {
     if (signal?.aborted) return 'cancelled';
     const record = ledger.start(course);
     if (!record) return 'unknown'; // Never replay an unresolved submission.
     try {
-      let response = await submit({ clazzType: course.courseType, clazzId: course.classID, secretVal: course.secretVal });
-      if (terminal(record.state)) return record.state;
-      if (codeOf(response?.code) === '301') {
-        const confirmed = signal?.aborted ? false : await untilStopped(confirm(response.msg || '此课程需要再次确认'), signal);
-        if (!confirmed) {
-          ledger.change(record, 'cancelled', '已取消二次确认');
+      try {
+        let response = await submit({ clazzType: course.courseType, clazzId: course.classID, secretVal: course.secretVal });
+        if (terminal(record.state)) return record.state;
+        if (codeOf(response?.code) === '301') {
+          const confirmed = signal?.aborted ? false : await untilStopped(confirm(response.msg || '此课程需要再次确认'), signal);
+          if (!confirmed) {
+            ledger.change(record, 'cancelled', '已取消二次确认');
+            return record.state;
+          }
+          if (signal?.aborted) {
+            ledger.change(record, 'cancelled', '已停止');
+            return record.state;
+          }
+          response = await submit({ clazzType: course.courseType, clazzId: course.classID, secretVal: course.secretVal, isConfirm: 1 });
+        }
+        if (terminal(record.state)) return record.state;
+        if (codeOf(response?.code) !== '200') {
+          ledger.change(record, 'failed', response?.msg || '服务器拒绝提交');
           return record.state;
         }
-        if (signal?.aborted) {
-          ledger.change(record, 'cancelled', '已停止');
-          return record.state;
-        }
-        response = await submit({ clazzType: course.courseType, clazzId: course.classID, secretVal: course.secretVal, isConfirm: 1 });
-      }
-      if (terminal(record.state)) return record.state;
-      if (codeOf(response?.code) !== '200') {
-        ledger.change(record, 'failed', response?.msg || '服务器拒绝提交');
-        return record.state;
-      }
-      ledger.change(record, 'queued', '已入队，等待最终结果');
+        ledger.change(record, 'queued', '已入队，等待最终结果');
+      } finally { onResponse(); }
       await ledger.wait(record, timeoutMs, signal);
       if (terminal(record.state)) return record.state;
       if (!signal?.aborted && await verify(course)) {
@@ -135,6 +136,15 @@ function createSeuCore() {
       if (!terminal(record.state)) ledger.change(record, error?.definitive ? 'failed' : 'unknown', error?.message || '网络中断，提交结果待核实');
     }
     return record.state;
+  }
+
+  function dispatch(options) {
+    let responded;
+    const response = new Promise(resolve => { responded = resolve; });
+    const result = attempt({ ...options, onResponse: responded });
+    // Early cancellation or an already-pending record may return before submitting.
+    result.then(responded, responded);
+    return { response, result };
   }
 
   function delay(ms, signal) {
@@ -158,7 +168,7 @@ function createSeuCore() {
     });
   }
 
-  async function run({ getCourses, send, mode, interval, signal, sleep = delay }) {
+  async function run({ getCourses, send, mode, interval, signal, sleep = delay, waitForPending }) {
     const active = new Map();
     let rounds = 0;
     let failed = false, failure;
@@ -166,17 +176,19 @@ function createSeuCore() {
     const pauseMs = intervalMs(interval, mode.isGrouped);
     const limit = mode.isCyclic ? (mode.cycleCount > 0 ? mode.cycleCount : Infinity) : 1;
     try {
-      while (!signal.aborted && !failed && rounds++ < limit) {
-        const courses = getCourses().filter(c => !pending(c.status) && c.status !== 'cancelled');
-        if (!courses.length) break;
+      while (!signal.aborted && !failed && rounds < limit) {
+        const courses = getCourses().filter(c => !pending(c.status) && !['cancelled', 'success'].includes(c.status));
+        if (!courses.length) {
+          if (waitForPending && await waitForPending()) continue;
+          break;
+        }
+        rounds++;
         for (let i = 0; i < courses.length && !signal.aborted && !failed; i += width) {
           const batch = [];
           for (const course of courses.slice(i, i + width)) {
             if (signal.aborted || failed) break;
             const key = keyOf(course);
             if (active.has(key)) continue;
-            while (active.size >= width && !signal.aborted && !failed) await Promise.race(active.values());
-            if (signal.aborted || failed) break;
             // Observe async failures immediately, even while the scheduler sleeps.
             const task = Promise.resolve().then(() => signal.aborted || failed ? undefined : send(course))
               .catch(error => { if (!failed) failure = error; failed = true; })
@@ -187,7 +199,7 @@ function createSeuCore() {
           if (!mode.isAsync) await Promise.all(batch);
           if (!signal.aborted && !failed) await sleep(pauseMs, signal);
         }
-        // A new cycle cannot overtake unresolved attempts from the previous cycle.
+        // Finish HTTP exchanges before the next cycle; queue results are tracked separately.
         await Promise.all(active.values());
       }
     } finally {
@@ -211,6 +223,6 @@ function createSeuCore() {
     return { version: 350, enrollDict: cleanCourses, settings: cleanSettings };
   }
 
-  return { codeOf, pending, keyOf, groupSize, intervalMs, parseCodes, findCourse, containsClass, Ledger, attempt, delay, run, serializable };
+  return { codeOf, pending, keyOf, groupSize, intervalMs, parseCodes, findCourse, containsClass, Ledger, attempt, dispatch, delay, run, serializable };
 }
 if (typeof module !== 'undefined' && module.exports) module.exports = createSeuCore();

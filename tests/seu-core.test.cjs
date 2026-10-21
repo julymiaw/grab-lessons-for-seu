@@ -153,7 +153,7 @@ for (const size of [2, 5]) test(`异步分组按配置每组 ${size} 门发送�
       active.delete(course.classID);
     },
   });
-  assert.equal(high, size);
+  assert.equal(high, courses.length);
   assert.deepEqual([...calls.values()], Array(7).fill(2));
 });
 
@@ -188,7 +188,7 @@ test('异步任务异常会停止后续派发，并等待其他在途任务完�
   const running = core.run({
     getCourses: () => courses, signal: new AbortController().signal,
     mode: { isAsync: true, isGrouped: true, isCyclic: true, cycleCount: 3 },
-    interval: 1000, sleep: async () => { await Promise.resolve(); },
+    interval: 1000, sleep: async () => { await new Promise(resolve => setImmediate(resolve)); },
     send: async course => {
       calls.push(course.classID);
       active++;
@@ -210,7 +210,7 @@ test('异步任务异常会停止后续派发，并等待其他在途任务完�
   assert.equal(calls.length, 3);
 });
 
-test('异步单个仍受在途数量上限约束，等待首门结束后才派发下一门', async t => {
+test('异步单个按间隔派发下一门，不等待前一门 HTTP 请求结束', async t => {
   const controller = new AbortController();
   const courses = [sample(), { ...sample(), classID: 'class-b' }];
   const calls = [], pauses = [];
@@ -227,9 +227,94 @@ test('异步单个仍受在途数量上限约束，等待首门结束后才派�
     },
   });
   await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(pauses, [1000]);
-  assert.deepEqual(calls, ['class-a']);
+  assert.deepEqual(pauses, [1000, 1000]);
+  assert.deepEqual(calls, ['class-a', 'class-b']);
   release();
   await running;
   assert.deepEqual(calls, ['class-a', 'class-b']);
+});
+
+
+test('dispatch 将 HTTP 回应与最终选课结果分开，入队时即可释放调度', async () => {
+  const options = setup();options.timeoutMs = 1000;
+  const job = core.dispatch({ ...options, submit: async () => ({ code: 200 }) });
+  await job.response;
+  assert.equal(options.course.status, 'queued');
+  let finished = false;job.result.then(() => { finished = true; });
+  await Promise.resolve();assert.equal(finished, false);
+  options.ledger.receive(packet(), 'batch-a');
+  assert.equal(await job.result, 'success');
+});
+
+test('取消或已在途的课程不会让 HTTP 调度门闩悬空', async () => {
+  const options = setup();options.controller.abort();
+  const cancelled = core.dispatch({ ...options, submit: async () => assert.fail('must not submit') });
+  await cancelled.response;assert.equal(await cancelled.result, 'cancelled');
+  const second = setup();second.ledger.start(second.course);
+  const pending = core.dispatch({ ...second, submit: async () => assert.fail('must not replay') });
+  await pending.response;assert.equal(await pending.result, 'unknown');
+});
+
+for (const isAsync of [false, true]) test(`${isAsync ? '异步' : '同步'}发送后不等待队列结算，不重复提交同一教学班`, async () => {
+  const controller = new AbortController();
+  const courses = [sample(), { ...sample(), classID: 'class-b' }];
+  const ledger = new core.Ledger(record => { record.course.status = record.state; });
+  const jobs = [], calls = [];
+  await core.run({
+    getCourses: () => courses, signal: controller.signal,
+    mode: { isAsync, isCyclic: true, cycleCount: 3 }, interval: 300, sleep: async () => {},
+    send: course => {
+      const job = core.dispatch({ course, ledger, signal: controller.signal, timeoutMs: 1000,
+        submit: async () => { calls.push(course.classID);return { code: 200 }; },
+        verify: async () => assert.fail('推送前不应核验'),
+      });
+      jobs.push(job.result);return job.response;
+    },
+  });
+  assert.deepEqual(calls, ['class-a', 'class-b']);
+  assert.deepEqual(courses.map(c => c.status), ['queued', 'queued']);
+  ledger.receive(packet(200, '1', 'class-a'), 'batch-a');
+  ledger.receive(packet(200, '1', 'class-b'), 'batch-a');
+  assert.deepEqual(await Promise.all(jobs), ['success', 'success']);
+});
+
+test('全部课程入队后等待结果，明确失败可在后续循环重试', async () => {
+  const course = sample(), controller = new AbortController(), results = new Set();
+  const ledger = new core.Ledger(record => { course.status = record.state; });
+  let calls = 0, waited = 0;
+  await core.run({
+    getCourses: () => [course], signal: controller.signal,
+    mode: { isAsync: true, isCyclic: true, cycleCount: 2 }, interval: 350, sleep: async () => {},
+    waitForPending: async () => {
+      if (!results.size) return false;
+      waited++;ledger.receive(packet(500), 'batch-a');await Promise.race(results);return true;
+    },
+    send: target => {
+      const job = core.dispatch({ course: target, ledger, signal: controller.signal, timeoutMs: 1000,
+        submit: async () => { calls++;if(calls===2)ledger.receive(packet(), 'batch-a');return { code: 200 }; },
+        verify: async () => false,
+      });
+      const result = job.result.finally(() => results.delete(result));results.add(result);return job.response;
+    },
+  });
+  await Promise.all(results);
+  assert.equal(waited, 1);assert.equal(calls, 2);assert.equal(course.status, 'success');
+});
+
+for (const isAsync of [false, true]) test(`${isAsync ? '异步' : '同步'}分组：每次发送两门，HTTP 未返回时按对应方式等待下一组`, async t => {
+  const courses = Array.from({ length: 3 }, (_, i) => ({ ...sample(), classID: `class-${i}` }));
+  const controller = new AbortController(), calls = [], pauses = [];
+  let release;const firstGroup = new Promise(resolve => { release = resolve; });
+  t.after(() => { controller.abort();release(); });
+  const running = core.run({
+    getCourses: () => courses, signal: controller.signal,
+    mode: { isAsync, isGrouped: true, groupSize: 2 }, interval: 1000,
+    sleep: async ms => { pauses.push(ms); },
+    send: async course => { calls.push(course.classID);if(course.classID!=='class-2')await firstGroup; },
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls,isAsync?['class-0','class-1','class-2']:['class-0','class-1']);
+  assert.deepEqual(pauses,isAsync?[1000,1000]:[]);
+  release();await running;
+  assert.deepEqual(calls,['class-0','class-1','class-2']);
 });
